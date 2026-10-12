@@ -68,6 +68,8 @@ A resource is any name: `gpu`, `npu`, `network`, `testdb`, `port-3000`, `pixel-7
 
 ## Examples
 
+> **Using Claude Code? You can skip this section.** With the plugin installed, you never type these commands. The skill tells Claude when to wrap its own work in `dibs`, and the guard makes it wait its turn. The examples show what Claude runs on your behalf, and what dibs can do for scripts and cron jobs outside Claude. The `toml` snippets are the one part you might still want, if you'd like to teach dibs about a resource or catch commands that forget to ask.
+
 ### One model on the GPU at a time
 
 ```sh
