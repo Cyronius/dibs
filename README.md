@@ -16,10 +16,12 @@ So this kept happening:
 
 - Two sessions load models onto the NPU at once. One fails. The other gets half the memory it planned for.
 - A session proudly reports a speedup. The real cause: another session's compiler finished halfway through its baseline run. The NPU, the iGPU and the CPU all slow each other down, so a number measured next to someone else's work is noise.
-- Memory commit creeps to 99%, and everything crawls, me included.
+- With that many sessions fighting over memory and CPU, the whole machine slows to a crawl. Memory commit creeps to 99% and everything drags, me included.
 - I ask "who's on the GPU?" and the answer is `d2w`. That turns out to be a worker inside another session I'd forgotten about.
 
 I tried rules in CLAUDE.md. An agent in the middle of a task skips a rule nothing enforces. What finally worked was a lock for each thing they fight over, a hook that makes them actually wait their turn, and a status line that tells me in plain names who has what, and until when. That's dibs.
+
+Now all of those sessions stay busy at once, and the machine stays snappy. Heavy work waits its turn instead of piling up, the guard holds back new commands while CPU or RAM is maxed out, and Claude runs at a lower priority than the things I'm actually touching.
 
 It isn't only for NPUs. If your agents share anything they can trip over, like a GPU, the network, a local Postgres, port 3000, a phone on a USB cable or a rate-limited API key, dibs lets them take turns.
 
