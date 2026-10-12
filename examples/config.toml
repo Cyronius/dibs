@@ -1,0 +1,26 @@
+# Copy to the path `dibs doctor` prints as "config" (or set DIBS_HOME). Every key is optional.
+
+[machine]
+cpu_max = 90              # the hook holds commands back above this total CPU %
+ram_floor_gb = 8          # ...or below this much free RAM
+commit_max = 95           # ...or above this memory commit % (Windows)
+quiet_cpu_max = 25        # --measure waits until total CPU is under this
+disk = { floor_gb = 15 }  # `dibs disk claim` always leaves this much free
+
+[hook]
+enabled = true            # false keeps the CLI and turns the Claude Code guard off
+pressure = true           # false: only resources hold commands back, never CPU or RAM
+
+# One model on the GPU at a time. The pattern catches commands that forget to ask.
+[resource.gpu]
+match = '\b(?:ollama|llama-server|llama-cli|vllm)\b'
+
+# Two big transfers at a time, and none while the link is already busy.
+[resource.network]
+capacity = 2
+match = '\b(?:hf download|huggingface-cli download|docker pull|aws s3 cp|wget)\b'
+probe = { kind = "net-counters", busy_mbps = 400 }
+
+# Builds that use every core take turns.
+[resource.build]
+match = '\b(?:cargo build|cmake --build|ninja|msbuild|docker build)\b'

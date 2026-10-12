@@ -1,0 +1,11 @@
+{
+  "name": "dibs",
+  "displayName": "dibs",
+  "version": "0.1.0",
+  "description": "🙋 Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding.",
+  "author": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
+  "homepage": "https://github.com/Cyronius/dibs",
+  "repository": "https://github.com/Cyronius/dibs",
+  "license": "MIT",
+  "keywords": ["locks", "gpu", "npu", "parallel-agents", "benchmarks", "shared-machine"]
+}

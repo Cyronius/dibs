@@ -1,0 +1,12 @@
+{
+  "name": "dibs",
+  "owner": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
+  "description": "dibs: take turns with shared resources across Claude Code sessions",
+  "plugins": [
+    {
+      "name": "dibs",
+      "source": "./",
+      "description": "🙋 Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+#!/bin/sh
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+run="$root/src/run_dibs.py"
+cache="$root/.python"
+
+find_python() {
+  for c in python3 python py; do
+    p=$(command -v "$c" 2>/dev/null) || continue
+    case "$p" in *WindowsApps*) continue ;; esac   # the Microsoft Store stub, not a real Python
+    if [ "$c" = py ]; then set -- "$p" -3; else set -- "$p"; fi
+    exe=$("$@" -c 'import sys; print(sys.executable if sys.version_info >= (3, 11) else "")' 2>/dev/null) || continue
+    [ -n "$exe" ] || continue
+    command -v cygpath >/dev/null 2>&1 && exe=$(cygpath -u "$exe")
+    printf '%s\n' "$exe"
+    return 0
+  done
+  return 1
+}
+
+py=${DIBS_PYTHON:-}
+if [ -z "$py" ] && [ -f "$cache" ]; then
+  read -r py < "$cache"
+  [ -x "$py" ] || py=""
+fi
+if [ -z "$py" ]; then
+  if ! py=$(find_python); then
+    case "$1" in
+      hook) exit 0 ;;
+      session-start) echo "dibs: no Python 3.11+ found, so the dibs guard is off. Install Python 3.11+ (https://www.python.org/downloads/) or set DIBS_PYTHON."; exit 0 ;;
+    esac
+    echo "dibs: needs Python 3.11 or newer on PATH (python3, python or py). Get it at https://www.python.org/downloads/ or set DIBS_PYTHON." >&2
+    exit 127
+  fi
+  printf '%s\n' "$py" > "$cache" 2>/dev/null
+fi
+exec "$py" "$run" "$@"

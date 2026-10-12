@@ -1,0 +1,28 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches every version string
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          grep -q "\"version\": \"$v\"" .claude-plugin/plugin.json
+          grep -q "^version = \"$v\"" pyproject.toml
+          grep -q "__version__ = \"$v\"" src/dibs/__init__.py
+          grep -q "^## $v" CHANGELOG.md
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## "v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "dibs $v" --notes-file notes.md
