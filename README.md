@@ -56,139 +56,28 @@ uv tool install git+https://github.com/Cyronius/dibs
 }
 ```
 
-## Quick start
+## Commands
 
-```sh
-dibs run gpu -- python train.py     # hold gpu while the command runs, free it when it exits
-dibs status                         # who holds what, until when, who's waiting
-dibs wait gpu                       # block until gpu is free, print one line, exit
-```
+> **Using Claude Code? You can skip this section.** With the plugin installed, you never type these. The skill tells Claude when to wrap its own work in `dibs`, and the guard makes it wait its turn. This table is what Claude runs on your behalf, and what you'd use from scripts, cron jobs or CI outside Claude.
 
-A resource is any name: `gpu`, `npu`, `network`, `testdb`, `port-3000`, `pixel-7`. You don't declare anything first. Config only adds behavior, like letting two holders share a name, or catching commands that forget to ask.
+| You want to | Run |
+|---|---|
+| Use the GPU (or any resource) for one command | `dibs run gpu --label "llama finetune" --eta 15m -- python finetune.py` |
+| Use several resources at once | `dibs run gpu npu -- python pipeline.py` |
+| Keep a dev server's port | `dibs run port-3000 -- npm run dev` |
+| Get a benchmark number you can trust | `dibs run --measure -- python bench.py` (prints CLEAN or NOISY) |
+| Keep resources across several commands | `dibs hold gpu --eta 45m`, then `dibs release gpu` |
+| Keep the whole machine for an A/B series | `dibs hold --measure --eta 45m`, runs, `dibs release --measure` |
+| Push back your ETA | `dibs extend gpu --eta 20m` |
+| Wait until something is free | `dibs wait gpu` (or `--measure`, `--pressure`, `--disk 40`) |
+| Reserve disk for a big download | `dibs disk claim 60 --eta 2h --path ~/models/qwen3-32b`, then `dibs disk release` |
+| See who holds what | `dibs status` (`--activity` also looks for work outside dibs) |
+| Check your setup | `dibs doctor` |
+| Free someone else's stuck hold | `dibs release gpu --force` |
 
-## Examples
+A resource is any name: `gpu`, `npu`, `network`, `testdb`, `port-3000`, `pixel-7`. `--label` says what the run is for, `--tag` names a worker, and `--new` creates a name that looks like a typo of an existing one.
 
-> **Using Claude Code? You can skip this section.** With the plugin installed, you never type these commands. The skill tells Claude when to wrap its own work in `dibs`, and the guard makes it wait its turn. The examples show what Claude runs on your behalf, and what dibs can do for scripts and cron jobs outside Claude. The `toml` snippets are the one part you might still want, if you'd like to teach dibs about a resource or catch commands that forget to ask.
-
-### One model on the GPU at a time
-
-```sh
-dibs run gpu --label "llama-3-8b finetune" --eta 15m -- python finetune.py --model llama-3-8b
-```
-
-A second session that asks for `gpu` waits, and can see who has it:
-
-```
-dibs: waiting for gpu, held by ml-train-9c ('llama-3-8b finetune') until ~14:20 (stale at 14:30)
-```
-
-Some commands won't ask. Give the resource a pattern, and the guard holds back any matching command while another session has the GPU:
-
-```toml
-[resource.gpu]
-match = '\b(?:ollama|llama-server|vllm)\b'
-```
-
-### Keep agents from eating the network
-
-Two sessions pulling weights at once each get half the link, and your video call gets nothing. Allow two big transfers at a time, and none while the link is already busy:
-
-```toml
-[resource.network]
-capacity = 2
-match = '\b(?:hf download|huggingface-cli download|docker pull|aws s3 cp)\b'
-probe = { kind = "net-counters", busy_mbps = 400 }
-```
-
-```sh
-dibs run network --label "Qwen3-32B weights" -- hf download Qwen/Qwen3-32B --local-dir ~/models/qwen3-32b
-```
-
-### A shared local test database
-
-Commit a `.dibs.toml` at the repo root, so every session and every worktree plays by the same rules:
-
-```toml
-[resource.testdb]
-match = '\b(?:npm run test:integration|pytest tests/integration)\b'
-```
-
-### A dev-server port
-
-```sh
-dibs run port-3000 -- npm run dev
-```
-
-The port stays taken while the server runs. The next session gets "held by web-ui-a2" instead of `EADDRINUSE`.
-
-### Builds that use every core
-
-Three sessions running `cargo build --release` at once each take three times as long, and the machine stops responding.
-
-```toml
-[resource.build]
-match = '\b(?:cargo build|cmake --build|ninja|msbuild)\b'
-```
-
-### A device: emulator, phone, serial port
-
-```sh
-dibs run pixel-7 -- flutter test integration_test -d emulator-5554
-dibs run com3 -- pio run -t upload --upload-port COM3
-```
-
-### A shared, rate-limited API key
-
-```toml
-[resource.staging-api]
-capacity = 2
-```
-
-```sh
-dibs run staging-api -- pytest tests/e2e
-```
-
-### Benchmarks you can trust
-
-`--measure` takes the whole machine. It waits until nothing else declared is running and total CPU is low, runs your command (at normal priority on Windows), and tells you whether the machine stayed quiet:
-
-```
-$ dibs run --measure --label "prefill tiling A" -- python bench.py --variant a
-dibs: CLEAN
-...benchmark output...
-dibs: CLEAN after
-```
-
-If anything else woke up during the run, you get `dibs: NOISY after ['link.exe:4412']`. Rerun it, and don't report that number.
-
-For an A/B series, hold the machine across the runs:
-
-```sh
-dibs hold --measure --eta 45m
-dibs run --measure -- python bench.py --variant a
-dibs run --measure -- python bench.py --variant b
-dibs release --measure
-```
-
-### Disk space for big downloads
-
-Disk is an amount, not a lock. Claim space before a 60 GB download so another session doesn't fill the drive first:
-
-```sh
-dibs disk claim 60 --eta 2h --path ~/models/qwen3-32b
-hf download Qwen/Qwen3-32B --local-dir ~/models/qwen3-32b
-dibs disk release
-```
-
-The claim shrinks as the folder fills. Another session's `dibs disk check 40` counts what you still need.
-
-### Without Claude
-
-Scripts, cron jobs and CI runners on the same machine take the same locks:
-
-```sh
-dibs run gpu --tag nightly --eta 3h -- python retrain.py
-```
+Config is optional, and it's the one part you might still write yourself. It lets you share a resource between N holders (`capacity = 2` for the network), catch commands that forget to ask (`match = '\bollama\b'` for the GPU), or spot work outside dibs (`probe`). Copy from [examples/](examples/): a [general config](examples/config.toml), a [per-repo `.dibs.toml`](examples/repo.dibs.toml) for a test database and a port, and [the Ryzen AI setup](examples/amd-ryzen-ai.toml) dibs grew up on.
 
 ## What it looks like
 
