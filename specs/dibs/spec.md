@@ -54,11 +54,46 @@ Run locks are owned by their process. A run lock held by another process of the 
 **Applies to:** dibs
 **Verification:** test
 
-A `hold` belongs to the session. Runs, waits and nested `dibs run` calls inside the holder's session, or inside an ancestor's run, go at once.
+A `hold` taken by the main agent belongs to the session. Runs, waits and nested `dibs run` calls inside the holder's session, including its subagents, or inside an ancestor's run, go at once. A subagent's hold is narrower: see DIBS-AGENT-HOLD-SCOPE.
 
 **Acceptance criteria:**
 - After `dibs hold gpu --eta 5m`, `dibs run gpu -- <cmd>` in the same session runs without waiting, and `dibs wait gpu` prints `FREE: gpu`.
+- After the main agent's `dibs hold gpu`, the hook lets a subagent's `ollama run x` through.
 - `dibs run gpu -- dibs run gpu -- <cmd>` runs `<cmd>`.
+
+### DIBS-AGENT-IDENTITY: A subagent is told apart from its siblings
+**Applies to:** dibs
+**Verification:** test
+
+Subagents share their session id. The guard hook sees the calling subagent in the hook payload's `agent_id`; the CLI does not. The CLI reads `DIBS_AGENT` (empty for the main agent) and records it as `agent` in the owner record. For a `dibs hold` run by a subagent, the hook notes the call before it runs and, after it, records the subagent's id on the hold it took. An existing hold, taken before the call began, is left alone.
+
+**Acceptance criteria:**
+- With `DIBS_AGENT=a1`, `core.who()["agent"]` is `"a1"`; unset, it is `""`.
+- `dibs hold gpu` by subagent `a1` (the hook sees the call before and after) leaves a hold whose owner record has `agent: "a1"`.
+- A subagent's `dibs hold gpu` that finds the main agent's hold already in place leaves that hold's owner record without an `agent`.
+
+**Verification (manual):** In a Claude Code session with the plugin enabled, have a subagent run `dibs hold gpu --eta 5m`. `dibs status` shows the hold, and `owner.json` under the dibs home's `state/held/gpu/0/` has the subagent's `agent`. If it has none, the PostToolUse payload lacks `agent_id` or `tool_use_id`.
+
+### DIBS-AGENT-HOLD-SCOPE: A subagent's hold covers only that subagent
+**Applies to:** dibs
+**Verification:** test
+
+A hold with an `agent` covers that agent only. Its siblings and the main agent wait like another session would, in the hook and in `dibs run`. The holder's own agent, or the main agent of the session, may release or extend it; a sibling may not, and the hook refuses its `dibs release` and `dibs extend` unless `--force`.
+
+**Acceptance criteria:**
+- `core.mine(hold, "S", {}, agent)` for a hold of session `S` and agent `a1` is true for `a1` and false for `a2`, for the main agent (`""`), and for another session. For a hold with no agent it is true for every agent of `S`.
+- While `a1` holds `gpu`, the hook lets `a1`'s `ollama run x` through and denies `a2`'s and the main agent's.
+- While `a1` holds `gpu`, `dibs run gpu -- <cmd>` by `a2` waits until `a1` releases.
+- `dibs release gpu` by `a2` prints "only that agent" and the hold stays; by the main agent it releases.
+- The hook denies `dibs release gpu` and `dibs extend gpu` by `a2` with "only that agent"; it lets `a1`, the main agent, and `--force` through.
+
+### DIBS-AGENT-STOP-RELEASE: A stopping subagent frees its holds
+**Applies to:** dibs
+**Verification:** manual
+
+When a subagent stops, the hook ends every hold that subagent took.
+
+**Verification (manual):** Have a subagent run `dibs hold gpu --eta 30m` and finish without releasing. From the main agent, `dibs status` no longer shows `gpu` held. If it still does, the SubagentStop payload lacks `agent_id`.
 
 ### DIBS-STALE: Dead and overdue holders are taken over
 **Applies to:** dibs
@@ -77,6 +112,7 @@ A run lock is stale when its process is gone. A hold is stale when its session's
 
 **Acceptance criteria:**
 - Session B's `dibs release gpu` on A's hold prints "only that session" and the hold stays; with `--force` it is released.
+- A subagent's hold follows DIBS-AGENT-HOLD-SCOPE.
 
 ### DIBS-WAIT: `wait` blocks until free and prints one line
 **Applies to:** dibs
@@ -91,7 +127,7 @@ A run lock is stale when its process is gone. A hold is stale when its session's
 **Applies to:** dibs
 **Verification:** test
 
-Inside Claude Code, a holder is named by its session's name (from Claude Code's session record, falling back to `claude agents --json`, then to the session id prefix). `--tag` adds a worker name after `/`. `--label` is the purpose; without one, `status` shows the command with each path cut to its file name. A label of the form `<session>/<worker>: <purpose>` splits into tag and purpose. Outside Claude Code the name is `DIBS_NAME`, the tag, or `<user> (<folder>)`.
+Inside Claude Code, a holder is named by its session's name (from Claude Code's session record, falling back to `claude agents --json`, then to the session id prefix). `--tag` adds a worker name after `/`; it is display only. A subagent with no tag shows the first 7 characters of its `agent`. `--label` is the purpose; without one, `status` shows the command with each path cut to its file name. A label of the form `<session>/<worker>: <purpose>` splits into tag and purpose. Outside Claude Code the name is `DIBS_NAME`, the tag, or `<user> (<folder>)`.
 
 **Acceptance criteria:**
 - `status` shows `alpha-1f/d01 ('dataset shards 1-4')` for `--tag d01 --label "dataset shards 1-4"` in session alpha-1f.

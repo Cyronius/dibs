@@ -54,11 +54,25 @@ class Box:
         return subprocess.Popen([sys.executable, str(RUN), *args], env=env or self.a, cwd=self.tmp, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    def hook(self, command: str, sid: str, cwd=None, env=None):
-        data = json.dumps({"session_id": sid, "cwd": str(cwd or self.tmp), "tool_name": "Bash",
-                           "tool_input": {"command": command}})
+    def hook_event(self, payload: dict, sid: str, agent=None, cwd=None, env=None):
+        data = json.dumps({"session_id": sid, "cwd": str(cwd or self.tmp), **payload,
+                           **({"agent_id": agent} if agent else {})})
         r = self.run("hook", input=data, env=env)
         return json.loads(r.stdout) if r.stdout.strip() else None
+
+    def hook(self, command: str, sid: str, cwd=None, env=None, agent=None, call=None):
+        return self.hook_event({"tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": call},
+                               sid, agent, cwd, env)
+
+    def post_hook(self, command: str, sid: str, agent=None, call=None):
+        return self.hook_event({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                                "tool_input": {"command": command}, "tool_use_id": call}, sid, agent)
+
+    def owner(self, name: str, slot: int = 0) -> dict:
+        return json.loads((self.home / "state" / "held" / name / str(slot) / "owner.json").read_text())
+
+    def as_agent(self, agent: str, env=None) -> dict:
+        return {**(env or self.a), "DIBS_AGENT": agent}
 
     def until(self, cond, timeout=20.0) -> bool:
         end = time.time() + timeout

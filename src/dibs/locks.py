@@ -60,17 +60,39 @@ def held_names() -> list:
     return sorted(p.name for p in HELD.iterdir() if p.is_dir()) if HELD.is_dir() else []
 
 
-def blocking(name: str, cap: int, sid=None, table=None) -> list:
-    # holders that stop this session from getting a slot now
+def blocking(name: str, cap: int, sid=None, table=None, agent=None) -> list:
+    # holders that stop this session's agent from getting a slot now
     hs = holders(name)
-    others = [h for h in hs if not mine(h, sid, table)]
+    others = [h for h in hs if not mine(h, sid, table, agent)]
     return others if others and len(hs) >= cap else []
 
 
-def session_holds(sid: str) -> list:
+def session_holds(sid: str, agent: str = "") -> list:
     if not sid:
         return []
-    return [h for n in held_names() for h in holders(n) if h.get("session") == sid]
+    return [h for n in held_names() for h in holders(n)
+            if h.get("session") == sid and (not h.get("hold") or core.covers(h, sid, agent))]
+
+
+def stamp_agent(sid: str, agent: str, names, since: float) -> int:
+    # a hold taken through the CLI can't know which subagent ran it; the hook that watched the call does
+    n = 0
+    for name in names:
+        for h in holders(name):
+            if h.get("hold") and h.get("session") == sid and not h.get("agent") and h.get("t0", 0) >= since:
+                d = h.pop("_dir")
+                write_json(d / "owner.json", {**h, "agent": agent})
+                n += 1
+    return n
+
+
+def release_agent(sid: str, agent: str) -> int:
+    n = 0
+    for name in held_names():
+        dirs = [h["_dir"] for h in holders(name) if h.get("session") == sid and h.get("agent") == agent]
+        release(dirs)
+        n += len(dirs)
+    return n
 
 
 def waiter(name: str, me: dict):

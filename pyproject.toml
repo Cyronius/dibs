@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dibs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
 readme = "README.md"
 license = "MIT"

@@ -92,6 +92,102 @@ def test_nested_run_is_reentrant(box):
     assert "nested ok" in r.stdout
 
 
+AGENT_GUARD = "[resource.gpu]\nmatch = 'ollama'\n"
+SESSION_A = "sess-aaaa-1111"
+
+
+def denied(d) -> bool:
+    return bool(d) and d["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_hold_covers_only_its_own_agent_unless_main():
+    def hold(agent):
+        return {"session": "S", "hold": True, "agent": agent}
+    assert core.mine(hold("a1"), "S", {}, "a1")
+    assert not core.mine(hold("a1"), "S", {}, "a2")
+    assert not core.mine(hold("a1"), "S", {}, "")
+    assert not core.mine(hold("a1"), "T", {}, "a1")
+    assert all(core.mine(hold(""), "S", {}, who) for who in ("", "a1", "a2"))
+    assert all(core.mine({"session": "S", "hold": True}, "S", {}, who) for who in ("", "a1"))
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_hook_holds_back_siblings_of_a_subagents_hold(box):
+    box.config(AGENT_GUARD)
+    box.run("hold", "gpu", "--eta", "5m", env=box.as_agent("a1"))
+    assert box.hook("ollama run x", SESSION_A, agent="a1") is None
+    assert denied(box.hook("ollama run x", SESSION_A, agent="a2"))
+    assert denied(box.hook("ollama run x", SESSION_A))
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_main_hold_still_covers_every_subagent(box):
+    box.config(AGENT_GUARD)
+    box.run("hold", "gpu", "--eta", "5m")
+    assert box.hook("ollama run x", SESSION_A, agent="a1") is None
+    assert box.hook("ollama run x", SESSION_A) is None
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_run_waits_behind_a_siblings_hold(box):
+    box.run("hold", "gpu", "--eta", "5m", env=box.as_agent("a1"))
+    second = box.bg("run", "gpu", "--", sys.executable, "-c", "print('a2 ran')", env=box.as_agent("a2"))
+    time.sleep(1.5)
+    assert second.poll() is None
+    box.run("release", "gpu", env=box.as_agent("a1"))
+    out = second.communicate(timeout=60)[0]
+    assert "a2 ran" in out
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_only_the_owning_agent_or_main_releases_an_agents_hold(box):
+    box.run("hold", "gpu", "--eta", "5m", env=box.as_agent("a1"))
+    r = box.run("release", "gpu", env=box.as_agent("a2"))
+    assert "only that agent" in r.stdout and box.held("gpu")
+    assert "gpu: released" in box.run("release", "gpu").stdout
+
+
+# Traces: DIBS-AGENT-HOLD-SCOPE
+def test_hook_denies_a_sibling_ending_an_agents_hold(box):
+    box.run("hold", "gpu", "--eta", "5m", env=box.as_agent("a1"))
+    d = box.hook("dibs release gpu", SESSION_A, agent="a2")
+    assert denied(d) and "only that agent" in d["hookSpecificOutput"]["permissionDecisionReason"]
+    assert denied(box.hook("dibs extend gpu --eta 10m", SESSION_A, agent="a2"))
+    assert box.hook("dibs release gpu", SESSION_A, agent="a1") is None
+    assert box.hook("dibs release gpu", SESSION_A) is None
+    assert box.hook("dibs release gpu --force", SESSION_A, agent="a2") is None
+
+
+# Traces: DIBS-AGENT-IDENTITY
+def test_post_hook_stamps_the_hold_a_subagent_just_took(box):
+    box.config(AGENT_GUARD)
+    cmd = "dibs hold gpu --eta 5m"
+    assert box.hook(cmd, SESSION_A, agent="a1", call="t1") is None
+    box.run("hold", "gpu", "--eta", "5m")
+    box.post_hook(cmd, SESSION_A, agent="a1", call="t1")
+    assert box.owner("gpu")["agent"] == "a1"
+    assert denied(box.hook("ollama run x", SESSION_A, agent="a2"))
+
+
+# Traces: DIBS-AGENT-IDENTITY
+def test_post_hook_leaves_an_existing_main_hold_alone(box):
+    box.run("hold", "gpu", "--eta", "5m")
+    cmd = "dibs hold gpu --eta 5m"
+    box.hook(cmd, SESSION_A, agent="a1", call="t2")
+    box.run("hold", "gpu", "--eta", "5m")
+    box.post_hook(cmd, SESSION_A, agent="a1", call="t2")
+    assert not box.owner("gpu").get("agent")
+
+
+# Traces: DIBS-AGENT-IDENTITY
+def test_who_reads_the_agent_from_the_environment(monkeypatch):
+    monkeypatch.setenv("DIBS_AGENT", "a1")
+    assert core.who()["agent"] == "a1"
+    monkeypatch.delenv("DIBS_AGENT")
+    assert core.who()["agent"] == ""
+
+
 # Traces: DIBS-STALE
 def test_lock_of_a_dead_process_is_taken_over(box):
     dead = subprocess.Popen([sys.executable, "-c", "pass"])

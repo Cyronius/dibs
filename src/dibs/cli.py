@@ -115,7 +115,7 @@ def cmd_run(a: list) -> int:
 def cmd_hold(a: list) -> int:
     cfg = core.load_config()
     tg, me, eta = targets(a, cfg), me_from(a), eta_from(a, required=True)
-    have = {h.get("resource") for h in locks.session_holds(me["session"])}
+    have = {h.get("resource") for h in locks.session_holds(me["session"], me["agent"])}
     if have and not have >= {n for n, _, _ in tg}:
         print(f"dibs: warning: this session already holds {sorted(have)} and now asks for more. Take a hold's "
               "whole set at once, or two sessions can deadlock until an ETA passes.", flush=True)
@@ -137,27 +137,28 @@ def release_names(a: list, cfg) -> list:
 
 
 def cmd_release(a: list) -> int:
-    cfg, sid = core.load_config(), core.my_session()
+    cfg, sid, agent = core.load_config(), core.my_session(), core.my_agent()
     names = release_names(a, cfg)
     if not names:
         raise Problem("name what to release, or pass --measure or --all")
     for n in names:
         hs = locks.holders(n)
-        ours = [h for h in hs if h.get("session") == sid or "--force" in a]
+        ours = [h for h in hs if core.controls(h, sid, agent) or "--force" in a]
         locks.release(h["_dir"] for h in ours)
         if ours:
             print(f"{n}: released")
         elif hs and "--all" not in a:
-            print(f"{n}: held by {describe(hs[0])}; only that session, or you with --force, can release it")
+            who_ = "agent" if hs[0].get("session") == sid else "session"
+            print(f"{n}: held by {describe(hs[0])}; only that {who_}, or you with --force, can release it")
         elif "--all" not in a:
             print(f"{n}: already free")
     return 0
 
 
 def cmd_extend(a: list) -> int:
-    eta, sid = core.parse_dur(opt(a, "--eta", "20m")), core.my_session()
+    eta, sid, agent = core.parse_dur(opt(a, "--eta", "20m")), core.my_session(), core.my_agent()
     for n in [x.lower() for x in positional(a)]:
-        ours = [h for h in locks.holders(n) if h.get("session") == sid]
+        ours = [h for h in locks.holders(n) if core.controls(h, sid, agent)]
         for h in ours:
             d = h.pop("_dir")
             h["eta"] = time.time() + eta

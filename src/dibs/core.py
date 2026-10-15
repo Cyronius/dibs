@@ -21,6 +21,7 @@ def default_home() -> Path:
 HOME = default_home()
 HELD, DISK = HOME / "state" / "held", HOME / "state" / "disk"
 PRESSURE, KNOWN, HOOK_SEEN = HOME / "state" / "pressure.json", HOME / "state" / "known.json", HOME / "state" / "hook.json"
+HOLD_CALLS = HOME / "state" / "hold-calls"
 USER_CONFIG = HOME / "config.toml"
 REPO_CONFIG = ".dibs.toml"
 
@@ -180,6 +181,20 @@ def my_session() -> str:
         or f"user-{getpass.getuser()}"
 
 
+def my_agent() -> str:
+    return os.environ.get("DIBS_AGENT", "").strip()
+
+
+def covers(own, sid, agent) -> bool:
+    # a main-agent hold covers its whole session; a subagent's hold covers only that subagent
+    return bool(sid) and own.get("session") == sid and (not own.get("agent") or own["agent"] == agent)
+
+
+def controls(own, sid, agent) -> bool:
+    # who may end or extend a hold: its own agent, or the main agent of its session
+    return own.get("session") == sid and (not agent or own.get("agent") == agent)
+
+
 def in_claude() -> bool:
     return bool(os.environ.get("CLAUDE_CODE_SESSION_ID"))
 
@@ -254,8 +269,9 @@ def who(label=None, tag=None) -> dict:
         name = os.environ.get("DIBS_NAME") or tag or f"{getpass.getuser()} ({project})"
         tag = None if name == tag else tag
     t2, purpose = split_label((label or "").strip(), name)
-    return {"claude_pid": cpid, "session": sid, "name": name, "project": project, "tag": tag or t2,
-            "purpose": purpose[:80]}
+    agent = my_agent()
+    return {"claude_pid": cpid, "session": sid, "agent": agent, "name": name, "project": project,
+            "tag": tag or t2 or agent[:7] or None, "purpose": purpose[:80]}
 
 
 def display(own) -> str:
@@ -284,9 +300,11 @@ def describe(own) -> str:
     return f"{display(own)}{f' ({what[:60]!r})' if what else ''} {when}"
 
 
-def mine(own, sid=None, table=None) -> bool:
-    # subagents share the session id, so a sibling's run lock isn't ours; a hold or an ancestor's run lock is
+def mine(own, sid=None, table=None, agent=None) -> bool:
+    # subagents share the session id, so a sibling's run lock isn't ours; a covering hold or an ancestor's run lock is
     sid = my_session() if sid is None else sid
     if not sid or own.get("session") != sid:
         return False
-    return bool(own.get("hold")) or own.get("pid") in system.ancestors(table)
+    if own.get("hold"):
+        return covers(own, sid, my_agent() if agent is None else agent)
+    return own.get("pid") in system.ancestors(table)

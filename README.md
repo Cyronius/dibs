@@ -156,14 +156,14 @@ Probes:
 
 Names are lowercase letters, digits, `.`, `_` and `-`. A new name one or two letters away from one dibs already knows is refused with "did you mean `gpu`?". Pass `--new` if you really mean it.
 
-Environment: `DIBS_HOME` moves the home folder, `DIBS_PYTHON` picks the interpreter, `DIBS_SESSION` and `DIBS_NAME` group and name processes outside Claude Code.
+Environment: `DIBS_HOME` moves the home folder, `DIBS_PYTHON` picks the interpreter, `DIBS_SESSION` and `DIBS_NAME` group and name processes outside Claude Code, and `DIBS_AGENT` splits one session into agents.
 
 ## How it works
 
 - A lock slot is a directory. `mkdir` is atomic on every OS, so two processes can't both create it. The holder's details sit in an `owner.json` inside.
 - A `run` lock belongs to its process and frees when the process exits, even if it crashes.
 - A `hold` belongs to the session. It frees on `release`, when the session exits, or at ETA + max(10 minutes, 25% of the span). Nobody stays stuck behind a forgotten hold.
-- Subagents share their session's identity, but each `run` is its own process, so siblings still take turns. A `hold` covers the whole session.
+- Subagents share their session's id, but each `run` is its own process, so siblings still take turns. A `hold` taken by the main agent covers the whole session. A `hold` taken by a subagent covers only that subagent: the hook sees which subagent made each call, records it on the hold, and holds its siblings back. It ends when the subagent stops. Outside the hook, `DIBS_AGENT` names the agent.
 - Several resources are always taken in sorted order, so two callers can't deadlock.
 - No daemon and no server. Python's standard library only; psutil is used if it happens to be installed.
 

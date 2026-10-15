@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- A subagent's `hold` covers only that subagent. Its siblings and the main agent wait for it, and only the owner or the main agent can release or extend it. A main-agent hold still covers every subagent.
+- The guard hook reads the calling subagent from the hook payload, records it on holds a subagent takes, and ends a subagent's holds when it stops (new PostToolUse and SubagentStop hooks).
+- `DIBS_AGENT` names an agent for processes the hook doesn't see.
+
 ## 0.1.0
 
 First release.
