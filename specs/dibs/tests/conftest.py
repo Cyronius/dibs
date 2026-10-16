@@ -4,8 +4,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-RUN = ROOT / "src" / "run_dibs.py"
-sys.path.insert(0, str(ROOT / "src"))
+BIN = os.environ.get("DIBS_BIN") or str(ROOT / "target" / "release" / ("dibs.exe" if os.name == "nt" else "dibs"))
 
 LAX = """
 [machine]
@@ -38,20 +37,20 @@ class Box:
         (self.claude / "sessions" / f"{pid}.json").write_text(json.dumps({"pid": pid, "sessionId": sid, "name": name,
                                                                            "cwd": str(self.tmp)}))
         env = {**os.environ, "DIBS_HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.claude),
-               "CLAUDE_CODE_SESSION_ID": sid, "CLAUDE_PID": str(pid), "DIBS_AGENTS_LOOKUP": "0",
-               "PYTHONIOENCODING": "utf-8"}
-        env.pop("DIBS_SESSION", None)
+               "CLAUDE_CODE_SESSION_ID": sid, "CLAUDE_PID": str(pid), "DIBS_AGENTS_LOOKUP": "0"}
+        for k in ("DIBS_SESSION", "DIBS_AGENT", "DIBS_NAME"):
+            env.pop(k, None)
         return env
 
     def config(self, text: str) -> None:
         (self.home / "config.toml").write_text(LAX + text)
 
     def run(self, *args, env=None, cwd=None, input=None, timeout=60):
-        return subprocess.run([sys.executable, str(RUN), *args], env=env or self.a, cwd=cwd or self.tmp, input=input,
+        return subprocess.run([BIN, *args], env=env or self.a, cwd=cwd or self.tmp, input=input,
                               capture_output=True, text=True, timeout=timeout)
 
     def bg(self, *args, env=None):
-        return subprocess.Popen([sys.executable, str(RUN), *args], env=env or self.a, cwd=self.tmp, text=True,
+        return subprocess.Popen([BIN, *args], env=env or self.a, cwd=self.tmp, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     def hook_event(self, payload: dict, sid: str, agent=None, cwd=None, env=None):

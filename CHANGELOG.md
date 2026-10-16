@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Rewritten in Rust: one small native binary, no Python. The hook runs in a few milliseconds instead of about 150.
+- Builds for Windows, Linux and macOS (x64). The plugin ships them from a `dist` branch; grab a binary from the releases page to use dibs outside Claude Code.
+- `match` patterns use Rust regex syntax: no lookaround or backreferences.
+- Gone: the Python package, `uv tool install`, `DIBS_PYTHON`, and the `psutil` option.
+
 ## 0.2.0
 
 - A subagent's `hold` covers only that subagent. Its siblings and the main agent wait for it, and only the owner or the main agent can release or extend it. A main-agent hold still covers every subagent.

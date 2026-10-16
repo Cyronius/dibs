@@ -1,8 +1,8 @@
 import json, subprocess, sys, time
 
-from conftest import sleep_cmd
+from pathlib import Path
 
-from dibs import core
+from conftest import BIN, sleep_cmd
 
 
 # Traces: DIBS-ANY-NAME
@@ -86,8 +86,7 @@ def test_hold_covers_later_runs_in_the_session(box):
 
 # Traces: DIBS-HOLD-REENTRANT
 def test_nested_run_is_reentrant(box):
-    from conftest import RUN
-    r = box.run("run", "gpu", "--", sys.executable, str(RUN), "run", "gpu", "--", sys.executable, "-c",
+    r = box.run("run", "gpu", "--", BIN, "run", "gpu", "--", sys.executable, "-c",
                 "print('nested ok')", timeout=30)
     assert "nested ok" in r.stdout
 
@@ -98,18 +97,6 @@ SESSION_A = "sess-aaaa-1111"
 
 def denied(d) -> bool:
     return bool(d) and d["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-# Traces: DIBS-AGENT-HOLD-SCOPE
-def test_hold_covers_only_its_own_agent_unless_main():
-    def hold(agent):
-        return {"session": "S", "hold": True, "agent": agent}
-    assert core.mine(hold("a1"), "S", {}, "a1")
-    assert not core.mine(hold("a1"), "S", {}, "a2")
-    assert not core.mine(hold("a1"), "S", {}, "")
-    assert not core.mine(hold("a1"), "T", {}, "a1")
-    assert all(core.mine(hold(""), "S", {}, who) for who in ("", "a1", "a2"))
-    assert all(core.mine({"session": "S", "hold": True}, "S", {}, who) for who in ("", "a1"))
 
 
 # Traces: DIBS-AGENT-HOLD-SCOPE
@@ -180,14 +167,6 @@ def test_post_hook_leaves_an_existing_main_hold_alone(box):
     assert not box.owner("gpu").get("agent")
 
 
-# Traces: DIBS-AGENT-IDENTITY
-def test_who_reads_the_agent_from_the_environment(monkeypatch):
-    monkeypatch.setenv("DIBS_AGENT", "a1")
-    assert core.who()["agent"] == "a1"
-    monkeypatch.delenv("DIBS_AGENT")
-    assert core.who()["agent"] == ""
-
-
 # Traces: DIBS-STALE
 def test_lock_of_a_dead_process_is_taken_over(box):
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -211,11 +190,6 @@ def test_hold_past_its_eta_and_grace_is_taken_over(box):
     assert "took it" in r.stdout
 
 
-def test_stale_at_grace_is_ten_minutes_or_a_quarter_of_the_span():
-    assert core.stale_at({"t0": 0, "eta": 600}) == 600 + 600
-    assert core.stale_at({"t0": 0, "eta": 8000}) == 8000 + 2000
-
-
 # Traces: DIBS-IDENTITY
 def test_status_names_the_session_tag_and_purpose(box):
     p = box.bg("run", "gpu", "--tag", "d01", "--label", "dataset shards 1-4", *sleep_cmd(3))
@@ -224,19 +198,6 @@ def test_status_names_the_session_tag_and_purpose(box):
     st = box.run("status").stdout
     p.wait(timeout=30)
     assert "alpha-1f/d01 ('dataset shards 1-4')" in st
-
-
-# Traces: DIBS-IDENTITY
-def test_label_in_who_what_form_splits_into_tag_and_purpose():
-    assert core.split_label("alpha-1f/d2w: vax probe build", "alpha-1f") == ("d2w", "vax probe build")
-    assert core.split_label("alpha: tick timing A/B", "alpha-1f") == (None, "tick timing A/B")
-    assert core.split_label("A/B series", "alpha-1f") == (None, "A/B series")
-
-
-# Traces: DIBS-IDENTITY
-def test_command_paths_shrink_to_file_names():
-    assert core.short_cmd("C:/Users/x/AppData/Temp/scratch/gen.py --shards 1-4") == "gen.py --shards 1-4"
-    assert core.short_cmd('"/usr/bin/python3" /tmp/a/b/run.py') == "python3 run.py"
 
 
 # Traces: DIBS-RELEASE
@@ -268,7 +229,7 @@ def test_disk_claim_too_big_is_refused(box):
 def test_disk_claim_counts_against_other_sessions(box):
     import shutil
     box.config("[machine.disk]\nfloor_gb = 0\n")
-    free = shutil.disk_usage(core.Path.home()).free / 2**30
+    free = shutil.disk_usage(Path.home()).free / 2**30
     want = max(1, int(free - 5))
     assert "CLAIMED" in box.run("disk", "claim", str(want), "--eta", "1h", "--label", "weights").stdout
     assert box.run("disk", "check", "10", env=box.b).returncode == 3

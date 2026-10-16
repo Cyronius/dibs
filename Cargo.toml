@@ -1,0 +1,48 @@
+[package]
+name = "dibs"
+version = "0.3.0"
+edition = "2021"
+description = "Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
+license = "MIT"
+repository = "https://github.com/Cyronius/dibs"
+authors = ["Cyrus Attoun"]
+
+[lib]
+name = "dibs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dibs"
+path = "src/main.rs"
+
+[[test]]
+name = "unit"
+path = "specs/dibs/tests/unit.rs"
+
+[dependencies]
+serde_json = "1"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+regex-lite = "0.1"
+shlex = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Performance",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Time",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true

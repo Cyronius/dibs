@@ -1,6 +1,6 @@
 # dibs: canonical spec
 
-Prefix: `DIBS`. Home repo: dibs. Tests: `specs/dibs/tests/` (`python -m pytest` from the repo root).
+Prefix: `DIBS`. Home repo: dibs. Tests: `specs/dibs/tests/`. `cargo test --release` runs the unit tests (`unit.rs`); `python -m pytest` from the repo root runs the black-box tests against `target/release/dibs` (or `DIBS_BIN`).
 
 ## Resources and locks
 
@@ -188,7 +188,7 @@ Config merges defaults, the user config in the dibs home, and the nearest `.dibs
 **Applies to:** dibs
 **Verification:** test
 
-The PreToolUse hook denies a Bash or PowerShell command, with a message that starts `WAIT, not a refusal` and names `dibs wait <res>`, when another session (or a sibling run) holds a full resource that the command names in a `dibs run`/`dibs hold`, or whose `match` pattern the command matches. It never blocks plain reads, `dibs` status/wait/release/extend/disk/doctor commands, or the holder's own session's hold. `[hook] enabled = false` turns it off. Any internal error allows the command.
+The PreToolUse hook denies a Bash or PowerShell command, with a message that starts `WAIT, not a refusal` and names `dibs wait <res>`, when another session (or a sibling run) holds a full resource that the command names in a `dibs run`/`dibs hold`, or whose `match` pattern (Rust regex syntax: no lookaround or backreferences, case-insensitive) the command matches. It never blocks plain reads, `dibs` status/wait/release/extend/disk/doctor commands, or the holder's own session's hold. `[hook] enabled = false` turns it off. Any internal error allows the command.
 
 **Acceptance criteria:**
 - While A holds gpu, B's `dibs run gpu -- python train.py` is denied with "gpu is held by alpha-1f" and "dibs wait gpu".
@@ -214,15 +214,28 @@ When `[hook] pressure` is on and the session holds nothing, the hook denies non-
 2. The output shows the session's name and "hook ran N s ago in this session".
 3. Repeat on Windows (Git Bash and PowerShell tool), macOS and Linux.
 
-### DIBS-NO-PYTHON: A missing Python never blocks work
+### DIBS-NO-BINARY: A missing binary never blocks work
 **Applies to:** dibs
 **Verification:** manual
 
+The plugin's `bin/dibs` launcher runs the build for the OS (`bin/<os>-x64/dibs`), then `target/release/dibs`. With neither, it lets every hook through.
+
 **Verification (manual):**
-1. Set `PATH` so no Python 3.11+ is found and unset `DIBS_PYTHON`.
-2. `bin/dibs hook < /dev/null` exits 0 with no output.
-3. `bin/dibs session-start` prints one line that says the guard is off and how to fix it, and exits 0.
-4. `bin/dibs status` exits 127 with the install hint.
+1. Copy `bin/dibs` alone to an empty folder.
+2. `sh dibs hook < /dev/null` exits 0 with no output.
+3. `sh dibs session-start` prints one line that says the guard is off and where to get a build, and exits 0.
+4. `sh dibs status` exits 127 with the same hint.
+
+### DIBS-HOOK-FAST: The hook costs milliseconds
+**Applies to:** dibs
+**Verification:** manual
+
+With nothing held, `dibs hook` finishes in under 15 ms (median) when run directly. The plugin's hook command on Windows execs the binary from the one Git Bash that Claude Code already starts, so it adds no process of its own. (The `bin/dibs` launcher starts a second shell and costs about 40 ms more, so hooks.json does not use it on Windows.)
+
+**Verification (manual):**
+1. Build with `cargo build --release`.
+2. Run `target/release/dibs hook` 20 times with `{"session_id":"x","tool_name":"Bash","tool_input":{"command":"python train.py"}}` on stdin, and take the median wall time. Expect under 15 ms.
+3. Time `bash -c true` the same way, then the `command` string from hooks/hooks.json (with `CLAUDE_PLUGIN_ROOT` set) through `bash -c`. Expect the hook command within 15 ms of `bash -c true`.
 
 ### DIBS-PROBES: Probes see work outside dibs
 **Applies to:** dibs

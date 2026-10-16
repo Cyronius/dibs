@@ -34,16 +34,18 @@ In Claude Code:
 /plugin install dibs@dibs
 ```
 
-That's it. The plugin puts `dibs` on Claude's PATH, teaches Claude when to use it, and adds the guard. You need Python 3.11 or newer on your PATH. `dibs doctor` checks everything.
+That's it. The plugin puts `dibs` on Claude's PATH, teaches Claude when to use it, and adds the guard. `dibs` is one small native binary with nothing else to install. `dibs doctor` checks everything.
 
 - **Update:** `/plugin marketplace update dibs`
 - **Uninstall:** `/plugin uninstall dibs@dibs`, then delete the dibs home folder that `dibs doctor` shows.
 
-**Without Claude Code** (scripts, cron, CI on the same machine):
+**Without Claude Code** (scripts, cron, CI on the same machine): download the binary for your OS from the [releases page](https://github.com/Cyronius/dibs/releases) and put it on your PATH, or build it:
 
 ```sh
-uv tool install git+https://github.com/Cyronius/dibs
+cargo install --git https://github.com/Cyronius/dibs
 ```
+
+Builds are x64 for Windows, Linux and macOS. For another architecture, add it to the matrix in [release.yml](.github/workflows/release.yml).
 
 **For a team,** commit this to the repo's `.claude/settings.json`. Claude Code then tells each teammate the plugin is enabled but not installed, and they run one install command.
 
@@ -132,7 +134,7 @@ dibs reads `config.toml` there, plus the nearest `.dibs.toml` at or above the wo
 | Key | Default | Meaning |
 |---|---|---|
 | `resource.<name>.capacity` | `1` | How many holders at once. |
-| `resource.<name>.match` | none | Regex. The guard holds back matching commands while the resource is full. |
+| `resource.<name>.match` | none | Regex ([Rust syntax](https://docs.rs/regex-lite): no lookaround or backreferences). The guard holds back matching commands while the resource is full. |
 | `resource.<name>.probe` | none | How to see work that doesn't use dibs. See below. |
 | `resource.<name>.resident` | `[]` | Processes that keep the device busy while idle, like a loaded model server. |
 | `machine.cpu_max` | `90` | The guard waits above this total CPU %. |
@@ -156,7 +158,7 @@ Probes:
 
 Names are lowercase letters, digits, `.`, `_` and `-`. A new name one or two letters away from one dibs already knows is refused with "did you mean `gpu`?". Pass `--new` if you really mean it.
 
-Environment: `DIBS_HOME` moves the home folder, `DIBS_PYTHON` picks the interpreter, `DIBS_SESSION` and `DIBS_NAME` group and name processes outside Claude Code, and `DIBS_AGENT` splits one session into agents.
+Environment: `DIBS_HOME` moves the home folder, `DIBS_SESSION` and `DIBS_NAME` group and name processes outside Claude Code, and `DIBS_AGENT` splits one session into agents.
 
 ## How it works
 
@@ -165,7 +167,7 @@ Environment: `DIBS_HOME` moves the home folder, `DIBS_PYTHON` picks the interpre
 - A `hold` belongs to the session. It frees on `release`, when the session exits, or at ETA + max(10 minutes, 25% of the span). Nobody stays stuck behind a forgotten hold.
 - Subagents share their session's id, but each `run` is its own process, so siblings still take turns. A `hold` taken by the main agent covers the whole session. A `hold` taken by a subagent covers only that subagent: the hook sees which subagent made each call, records it on the hold, and holds its siblings back. It ends when the subagent stops. Outside the hook, `DIBS_AGENT` names the agent.
 - Several resources are always taken in sorted order, so two callers can't deadlock.
-- No daemon and no server. Python's standard library only; psutil is used if it happens to be installed.
+- No daemon and no server. One static binary of about 700 KB, starting in milliseconds.
 
 ## Limits
 
@@ -177,11 +179,12 @@ Environment: `DIBS_HOME` moves the home folder, `DIBS_PYTHON` picks the interpre
 ## Development
 
 ```sh
-python -m pip install pytest
-python -m pytest
+cargo build --release
+cargo test --release                   # unit tests
+python -m pip install pytest && python -m pytest   # black-box tests against target/release/dibs
 ```
 
-Requirements and their tests live in [specs/dibs/](specs/dibs/spec.md). Load the plugin from a checkout with `claude --plugin-dir .`.
+Requirements and their tests live in [specs/dibs/](specs/dibs/spec.md). Load the plugin from a checkout with `claude --plugin-dir .`; it runs `target/release/dibs` when no prebuilt binary is present. Set `DIBS_BIN` to test another binary.
 
 ## License
 

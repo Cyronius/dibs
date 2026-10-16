@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" session-start",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" session-start; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" session-start;; esac",
             "timeout": 30
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
             "timeout": 600,
             "statusMessage": "Waiting for a shared resource (dibs)"
           }
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
             "timeout": 30
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
             "timeout": 30
           }
         ]

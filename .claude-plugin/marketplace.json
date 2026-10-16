@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "dibs",
-      "source": "./",
+      "source": { "source": "github", "repo": "Cyronius/dibs", "ref": "dist" },
       "description": "🙋 Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
     }
   ]

@@ -8,21 +8,72 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: tag matches every version string
         run: |
           v="${GITHUB_REF_NAME#v}"
+          grep -q "^version = \"$v\"" Cargo.toml
           grep -q "\"version\": \"$v\"" .claude-plugin/plugin.json
-          grep -q "^version = \"$v\"" pyproject.toml
-          grep -q "__version__ = \"$v\"" src/dibs/__init__.py
           grep -q "^## $v" CHANGELOG.md
-      - name: publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, dir: windows-x64, exe: dibs.exe }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, dir: linux-x64, exe: dibs }
+          - { os: macos-latest, target: x86_64-apple-darwin, dir: macos-x64, exe: dibs }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - if: matrix.dir == 'linux-x64'
+        run: sudo apt-get install -y musl-tools
+      - run: cargo build --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.dir }}
+          path: target/${{ matrix.target }}/release/${{ matrix.exe }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+      - name: assemble the plugin tree
+        run: |
+          for d in windows-x64 linux-x64 macos-x64; do
+            mkdir -p bin/$d
+            cp built/$d/* bin/$d/
+          done
+          cp bin/windows-x64/dibs.exe bin/dibs.exe
+          chmod +x bin/dibs bin/linux-x64/dibs bin/macos-x64/dibs
+          rm -rf built target src specs Cargo.lock .github
+          rm -f Cargo.toml pytest.ini
+      - name: push dist
         run: |
           v="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan dist
+          git add -A -f
+          git commit -q -m "dibs $v, built from ${GITHUB_SHA}"
+          git push -f origin dist
+      - name: publish the release
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          git checkout -q "$GITHUB_SHA" -- CHANGELOG.md
           awk -v v="$v" '$0 ~ "^## "v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" --title "dibs $v" --notes-file notes.md
+          for d in windows-x64 linux-x64 macos-x64; do
+            f=$(ls bin/$d/*); cp "$f" "dibs-$v-$d$(case "$f" in *.exe) echo .exe;; esac)"
+          done
+          gh release create "$GITHUB_REF_NAME" --title "dibs $v" --notes-file notes.md dibs-$v-*
