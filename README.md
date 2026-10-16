@@ -75,6 +75,7 @@ Builds are x64 for Windows, Linux and macOS. For another architecture, add it to
 | Reserve disk for a big download | `dibs disk claim 60 --eta 2h --path ~/models/qwen3-32b`, then `dibs disk release` |
 | See who holds what | `dibs status` (`--activity` also looks for work outside dibs) |
 | Check your setup | `dibs doctor` |
+| Lower Claude Code's CPU priority by hand | `dibs nice` (`--all` for every Claude process) |
 | Free someone else's stuck hold | `dibs release gpu --force` |
 
 A resource is any name: `gpu`, `npu`, `network`, `testdb`, `port-3000`, `pixel-7`. `--label` says what the run is for, `--tag` names a worker, and `--new` creates a name that looks like a typo of an existing one.
@@ -127,7 +128,7 @@ Every key is optional. `dibs doctor` prints where your config lives:
 |---|---|
 | Windows | `%LOCALAPPDATA%\dibs` |
 | macOS | `~/Library/Application Support/dibs` |
-| Linux | `~/.local/state/dibs` |
+| Linux | `$XDG_STATE_HOME/dibs`, or `~/.local/state/dibs` |
 
 dibs reads `config.toml` there, plus the nearest `.dibs.toml` at or above the working directory. See [examples/](examples/), including [the Ryzen AI setup](examples/amd-ryzen-ai.toml) that dibs grew up on.
 
@@ -145,6 +146,7 @@ dibs reads `config.toml` there, plus the nearest `.dibs.toml` at or above the wo
 | `machine.lower_claude_priority` | on for Windows | The SessionStart priority drop. |
 | `hook.enabled` | `true` | The Claude Code guard. |
 | `hook.pressure` | `true` | Whether CPU and RAM pressure hold commands back. |
+| `hook.wait_inline_s` | `240` | The guard holds a command itself when the blocker should clear within this many seconds. |
 | `measure.noise_core_pct` | `50` | A process outside the run that uses more than this % of a core makes it NOISY. |
 
 Probes:
