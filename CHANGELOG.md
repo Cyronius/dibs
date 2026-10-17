@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - A command can carry an override past the pressure check: `DIBS_OVERRIDE='<reason>' <command>` (PowerShell: `$env:DIBS_OVERRIDE = '<reason>'; <command>`). It never gets past a measurement or another session's lock. Each override is logged to `state/overrides.jsonl`, and `dibs status` shows the last hour's. The pressure denial names the override and says when it is allowed.
 
