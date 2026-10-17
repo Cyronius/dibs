@@ -1,0 +1,53 @@
+{
+  "description": "dibs: lower Claude's priority at start, and hold back commands that would collide with another session's resources",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" session-start; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" session-start;; esac",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
+            "timeout": 600,
+            "statusMessage": "Waiting for a shared resource (dibs)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$OSTYPE\" in msys*|cygwin*) for b in \"${CLAUDE_PLUGIN_ROOT}/bin/windows-x64/dibs.exe\" \"${CLAUDE_PLUGIN_ROOT}/target/release/dibs.exe\"; do [ -f \"$b\" ] && exec \"$b\" hook; done; exit 0;; *) exec \"${CLAUDE_PLUGIN_ROOT}/bin/dibs\" hook;; esac",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
