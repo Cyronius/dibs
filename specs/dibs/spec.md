@@ -200,10 +200,23 @@ The PreToolUse hook denies a Bash or PowerShell command, with a message that sta
 **Applies to:** dibs
 **Verification:** test
 
-When `[hook] pressure` is on and the session holds nothing, the hook denies non-trivial commands while CPU is over `cpu_max`, free RAM under `ram_floor_gb`, or memory commit over `commit_max`, and names `dibs wait --pressure`.
+When `[hook] pressure` is on and the session holds nothing, the hook denies non-trivial commands while CPU is over `cpu_max`, free RAM under `ram_floor_gb`, or memory commit over `commit_max`, and names `dibs wait --pressure`, unless the command carries an override (DIBS-HOOK-OVERRIDE).
 
 **Acceptance criteria:**
 - With `ram_floor_gb = 100000`, `npm run build` is denied with "under pressure" and "dibs wait --pressure".
+
+### DIBS-HOOK-OVERRIDE: An override with a reason gets one command past pressure, and is logged
+**Applies to:** dibs
+**Verification:** test
+
+A command that starts with `DIBS_OVERRIDE='<reason>'` (Bash; double quotes or a bare word also work) or `$env:DIBS_OVERRIDE = '<reason>';` (PowerShell), with a non-empty reason, is not held back by pressure. It is still held back by a `--measure` reservation and by another session's hold on a resource it names or matches. When the override is what let the command through, the hook appends a line (time, session, agent, session name, reason, the first 120 characters of the command) to `state/overrides.jsonl`, and `dibs status` prints the last hour's overrides, newest first. A pressure denial names the override and when it is allowed: waiting costs money, or the user said not to wait.
+
+**Acceptance criteria:**
+- With `ram_floor_gb = 100000`, `DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true` and `$env:DIBS_OVERRIDE = 'pod idles'; ssh host true` are allowed; `ssh host true`, `DIBS_OVERRIDE='' ssh host true` and `DIBS_OVERRIDE='  ' ssh host true` are denied with "under pressure" and "DIBS_OVERRIDE=".
+- After the allowed override from session bravo-2e, `overrides.jsonl` has one line with that reason and name, and `dibs status` prints "bravo-2e" and "'pod idles at $0.22/hr'".
+- While A holds gpu (`match = '\bollama\b'`), B's `DIBS_OVERRIDE='pod idles' ollama run llama3` is denied with "gpu is held by alpha-1f".
+- While A holds the machine with `--measure`, B's `DIBS_OVERRIDE='pod idles' python train.py` is denied with "measurement by alpha-1f".
+- The prefix is read only at the start: `ssh h DIBS_OVERRIDE='late'` and `echo DIBS_OVERRIDE=x` carry no override.
 
 ### DIBS-PLUGIN: The plugin puts dibs on PATH and runs the hooks
 **Applies to:** dibs

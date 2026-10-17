@@ -323,3 +323,47 @@ def test_hook_holds_commands_back_under_pressure(box):
     d = box.hook("npm run build", "sess-bbbb-2222")
     assert d and "under pressure" in d["hookSpecificOutput"]["permissionDecisionReason"]
     assert "dibs wait --pressure" in d["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+PRESSED = "[machine]\nram_floor_gb = 100000\n[hook]\nwait_inline_s = 0\n"
+
+
+# Traces: DIBS-HOOK-OVERRIDE
+def test_override_passes_pressure_and_an_empty_reason_does_not(box):
+    (box.home / "config.toml").write_text(PRESSED)
+    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true", "sess-bbbb-2222") is None
+    assert box.hook("$env:DIBS_OVERRIDE = 'pod idles'; ssh host true", "sess-bbbb-2222") is None
+    for cmd in ("ssh host true", "DIBS_OVERRIDE='' ssh host true", "DIBS_OVERRIDE='  ' ssh host true"):
+        d = box.hook(cmd, "sess-bbbb-2222")
+        assert d and "under pressure" in d["hookSpecificOutput"]["permissionDecisionReason"], cmd
+        assert "DIBS_OVERRIDE=" in d["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+# Traces: DIBS-HOOK-OVERRIDE
+def test_override_is_logged_and_shown_in_status(box):
+    (box.home / "config.toml").write_text(PRESSED)
+    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true", "sess-bbbb-2222", env=box.b) is None
+    lines = (box.home / "state" / "overrides.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["reason"] == "pod idles at $0.22/hr" and entry["name"] == "bravo-2e"
+    assert "bravo-2e" in (st := box.run("status").stdout) and "'pod idles at $0.22/hr'" in st
+
+
+# Traces: DIBS-HOOK-OVERRIDE
+def test_override_does_not_pass_another_sessions_hold(box):
+    box.config("[resource.gpu]\nmatch = '\\bollama\\b'\n")
+    box.run("hold", "gpu", "--eta", "5m")
+    d = box.hook("DIBS_OVERRIDE='pod idles' ollama run llama3", "sess-bbbb-2222")
+    box.run("release", "gpu")
+    assert d and "gpu is held by alpha-1f" in d["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+# Traces: DIBS-HOOK-OVERRIDE
+def test_override_does_not_pass_a_measurement(box):
+    box.config("[resource.gpu]\n")
+    p = box.bg("run", "--measure", *sleep_cmd(6))
+    assert box.until(lambda: box.held("machine"), 40)
+    d = box.hook("DIBS_OVERRIDE='pod idles' python train.py", "sess-bbbb-2222")
+    p.communicate(timeout=90)
+    assert d and "measurement by alpha-1f" in d["hookSpecificOutput"]["permissionDecisionReason"]

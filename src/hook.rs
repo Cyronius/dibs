@@ -26,6 +26,53 @@ fn invoke() -> &'static Regex {
     rx(&R, r#"^\s*(?:&\s*)?["']?(?:[^\s"']*[\\/])?dibs(?:\.exe)?["']?\s+([a-z-]+)(.*)$"#)
 }
 
+// Bash `DIBS_OVERRIDE='why' cmd` or PowerShell `$env:DIBS_OVERRIDE = 'why'; cmd`, only at the very start
+pub fn override_of(cmd: &str) -> (Option<String>, &str) {
+    static B: OnceLock<Regex> = OnceLock::new();
+    static P: OnceLock<Regex> = OnceLock::new();
+    let bash = B.get_or_init(|| Regex::new(r#"^\s*DIBS_OVERRIDE=(?:'([^']*)'|"([^"]*)"|([^\s;'"]+))?(?:\s+|$)"#).unwrap());
+    let ps = P.get_or_init(|| Regex::new(r#"^\s*\$[Ee][Nn][Vv]:DIBS_OVERRIDE\s*=\s*(?:'([^']*)'|"([^"]*)")\s*;"#).unwrap());
+    for re in [bash, ps] {
+        if let Some(c) = re.captures(cmd) {
+            let why = (1..=3).find_map(|i| c.get(i)).map_or("", |m| m.as_str()).trim();
+            return ((!why.is_empty()).then(|| why.to_string()), &cmd[c.get(0).map_or(0, |m| m.end())..]);
+        }
+    }
+    (None, cmd)
+}
+
+fn overrides_file() -> PathBuf {
+    state("overrides.jsonl")
+}
+
+// newest first
+pub fn overrides(since: f64) -> Vec<Value> {
+    let text = std::fs::read_to_string(overrides_file()).unwrap_or_default();
+    let mut out: Vec<Value> =
+        text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| core::jf(v, "t").unwrap_or(0.0) >= since).collect();
+    out.reverse();
+    out
+}
+
+fn log_override(sid: &str, agent: &str, why: &str, cmd: &str) {
+    use std::io::Write;
+    let p = overrides_file();
+    if std::fs::metadata(&p).is_ok_and(|m| m.len() > 256 * 1024) {
+        let keep: Vec<String> = overrides(now() - 86400.0).iter().rev().map(Value::to_string).collect();
+        let _ = std::fs::write(&p, keep.join("\n") + "\n");
+    }
+    // only on an override, so the process walk stays off the hook's fast path
+    let name = jstr(&core::session_info(core::claude_pid(None), sid), "name").to_string();
+    let line = json!({"t": now(), "session": sid, "agent": agent, "name": name, "reason": why,
+                      "cmd": cmd.chars().take(120).collect::<String>()});
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn segments(cmd: &str) -> Vec<&str> {
     static R: OnceLock<Regex> = OnceLock::new();
     let split = R.get_or_init(|| Regex::new(r"&&|\|\||[;|\n]").unwrap());
@@ -67,7 +114,9 @@ struct Reason {
     wait: String,
 }
 
-fn blockers(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> Vec<Reason> {
+// the second value is the override reason, when it is what let the command past the pressure check
+fn blockers(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> (Vec<Reason>, Option<String>) {
+    let (why, cmd) = override_of(cmd);
     let (verb, names, toks) = invocation(cmd);
     let measure = toks.iter().any(|t| t == "--measure");
     let skip = match &verb {
@@ -75,7 +124,7 @@ fn blockers(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> Vec<Reason> {
         None => segments(cmd).iter().all(|s| trivial().is_match(s)),
     };
     if skip {
-        return vec![];
+        return (vec![], None);
     }
     let (mut out, held) = (vec![], locks::held_names());
     let table = if held.is_empty() { Default::default() } else { sys::procs() };
@@ -96,14 +145,19 @@ fn blockers(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> Vec<Reason> {
             }
         }
     }
+    let mut used = None;
     if cfg.flag("hook", "pressure") && !(!held.is_empty() && !locks::session_holds(sid, agent).is_empty()) {
         // a holder owns the machine, so pressure doesn't hold it back
         let p = probes::pressure(cfg);
         if !p.is_empty() {
-            out.push(Reason { text: format!("the machine is under pressure: {}", p.join(", ")), clears: Clears::Pressure, wait: "--pressure".into() });
+            if why.is_some() {
+                used = why;
+            } else {
+                out.push(Reason { text: format!("the machine is under pressure: {}", p.join(", ")), clears: Clears::Pressure, wait: "--pressure".into() });
+            }
         }
     }
-    out
+    (out, used)
 }
 
 // holds a subagent must not end or extend: its siblings' and the main agent's
@@ -152,8 +206,13 @@ fn deny(reasons: &[Reason]) {
     if !waits.is_empty() && pressure {
         cmd.push_str(" && dibs wait --pressure");
     }
+    let escape = if pressure {
+        "\nOnly the pressure part can be overridden, and only when waiting costs money (a billed cloud resource sits idle) or the user told you not to wait: rerun as DIBS_OVERRIDE='<why>' <command> (PowerShell: $env:DIBS_OVERRIDE='<why>'; <command>). dibs status shows every override."
+    } else {
+        ""
+    };
     deny_text(&format!(
-        "WAIT, not a refusal: {}.\nRun in a background Bash: {cmd}\nWhen it prints FREE, rerun this exact command unchanged. Tell the user what you're waiting on and until when.\nDon't work around it (different tool, renamed command, or skipping the check). Meanwhile, work that doesn't need the machine (reading, editing) is fine.",
+        "WAIT, not a refusal: {}.\nRun in a background Bash: {cmd}\nWhen it prints FREE, rerun this exact command unchanged. Tell the user what you're waiting on and until when.\nDon't work around it (different tool, renamed command, or skipping the check). Meanwhile, work that doesn't need the machine (reading, editing) is fine.{escape}",
         reasons.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("; ")
     ));
 }
@@ -225,20 +284,24 @@ fn run() -> R<()> {
     if cmd.trim().is_empty() {
         return Ok(());
     }
+    let plain = override_of(cmd).1;
     if event == "PostToolUse" {
-        stamp_hold(cmd, &data, sid, agent, &cfg);
+        stamp_hold(plain, &data, sid, agent, &cfg);
         return Ok(());
     }
     seen(sid);
-    if let Some(h) = foreign_holds(cmd, sid, &cfg, agent).first() {
-        deny_foreign(&invocation(cmd).0.unwrap_or_default(), h);
+    if let Some(h) = foreign_holds(plain, sid, &cfg, agent).first() {
+        deny_foreign(&invocation(plain).0.unwrap_or_default(), h);
         return Ok(());
     }
     let deadline = now() + cfg.f("hook", "wait_inline_s");
     loop {
-        let r = blockers(cmd, sid, &cfg, agent);
+        let (r, used) = blockers(cmd, sid, &cfg, agent);
         if r.is_empty() {
-            note_hold(cmd, &data, agent);
+            if let Some(why) = used {
+                log_override(sid, agent, &why, cmd);
+            }
+            note_hold(plain, &data, agent);
             return Ok(());
         }
         let far = r.iter().any(|x| match x.clears {

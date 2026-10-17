@@ -49,4 +49,8 @@ If the blocker should clear within 4 minutes, the hook holds the command and the
 
 Don't retry before the wait finishes. Never rename, reroute or split a command to get past the check. Reading and editing meanwhile is fine.
 
+### Override (pressure only)
+
+When the wait is for pressure and waiting costs money (a billed cloud resource such as a GPU pod sits idle) or the user told you not to wait, rerun the command with a reason in front: `DIBS_OVERRIDE='rented pod idles at $0.22/hr' ssh ...` (PowerShell: `$env:DIBS_OVERRIDE = '...'; ...`). Keep the overridden command light. Never override for convenience, and never to get past a measurement or another session's lock (the override can't anyway). Every override is logged, and `dibs status` shows it with your session name and reason. Tell the user you overrode, and why.
+
 Subagents share their session's name. A sibling's run blocks you like another session's does. A `hold` taken by the main agent covers all its subagents. A `hold` taken by a subagent covers only that subagent: its siblings and the main agent wait for it, and only it (or the main agent) can release or extend it. A subagent's holds end when it stops.

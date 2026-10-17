@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::core::{self, describe, hhmm, jf, jstr, now, read_json, state, write_json, Cfg, Me, Problem, MACHINE, R};
-use crate::{locks, probes, sys, VERSION};
+use crate::{hook, locks, probes, sys, VERSION};
 
 const VALUE_FLAGS: [&str; 5] = ["--label", "--tag", "--eta", "--path", "--disk"];
 
@@ -460,6 +460,11 @@ fn cmd_status(a: &[String]) -> R<i32> {
     parts.push(format!("disk free {:.0} GB", sys::disk_free_gb(&disk_path(&cfg))));
     let p = probes::pressure(&cfg);
     println!("{:<16} {}   pressure: {}", format!("now {}", hhmm(Some(now()))), parts.join("  "), if p.is_empty() { "ok".into() } else { p.join(", ") });
+    for o in hook::overrides(now() - 3600.0).iter().take(5) {
+        let name = Some(jstr(o, "name")).filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| jstr(o, "session").chars().take(8).collect());
+        let cmd: String = core::short_cmd(jstr(o, "cmd")).chars().take(60).collect();
+        println!("{:<16} {name} at {}: '{}' ({cmd})", "override", hhmm(jf(o, "t")), jstr(o, "reason"));
+    }
     if has(a, "--activity") {
         let r = probes::activity(&cfg, &cfg.resources(), 10.0, None);
         println!("{:<16} {}", "activity", if r.is_empty() { "quiet".into() } else { r.join("; ") });

@@ -1,4 +1,5 @@
 use dibs::core::{self, mine, short_cmd, split_label, stale_at, who};
+use dibs::hook::override_of;
 use dibs::sys::Procs;
 use serde_json::json;
 
@@ -61,4 +62,24 @@ fn command_paths_shrink_to_file_names() {
 fn resource_names_follow_the_pattern() {
     assert!(core::valid_name("port-3000") && core::valid_name("a.b_c"));
     assert!(!core::valid_name("GPU!") && !core::valid_name("-x") && !core::valid_name(&"a".repeat(65)));
+}
+
+// Traces: DIBS-HOOK-OVERRIDE
+#[test]
+fn override_prefix_gives_the_reason_and_the_rest_of_the_command() {
+    let cases = [
+        ("DIBS_OVERRIDE='pod idles' ssh h true", Some("pod idles"), "ssh h true"),
+        ("  DIBS_OVERRIDE=\"pod idles\" ssh h", Some("pod idles"), "ssh h"),
+        ("DIBS_OVERRIDE=billed ssh h", Some("billed"), "ssh h"),
+        ("$env:DIBS_OVERRIDE = 'pod idles'; ssh h", Some("pod idles"), "ssh h"),
+        ("$Env:DIBS_OVERRIDE='x';ssh h", Some("x"), "ssh h"),
+        ("DIBS_OVERRIDE='' ssh h", None, "ssh h"),
+        ("DIBS_OVERRIDE='  ' ssh h", None, "ssh h"),
+        ("ssh h DIBS_OVERRIDE='late'", None, "ssh h DIBS_OVERRIDE='late'"),
+        ("echo DIBS_OVERRIDE=x", None, "echo DIBS_OVERRIDE=x"),
+    ];
+    for (cmd, why, rest) in cases {
+        let (w, r) = override_of(cmd);
+        assert_eq!((w.as_deref(), r.trim()), (why, rest), "{cmd}");
+    }
 }

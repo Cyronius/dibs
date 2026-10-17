@@ -106,7 +106,7 @@ The plugin adds three things.
 
 - Is another session measuring? Then every command waits.
 - Does another session hold a resource this command names, or whose `match` pattern it fits? Then this command waits.
-- Is CPU, free RAM or memory commit past its limit? Then the command waits, unless this session already holds a lock.
+- Is CPU, free RAM or memory commit past its limit? Then the command waits, unless this session already holds a lock, or the command starts with an override: `DIBS_OVERRIDE='a billed pod is idle' ssh ...` (PowerShell: `$env:DIBS_OVERRIDE = '...'; ...`). An override never gets past a measurement or another session's lock, and `dibs status` shows the last hour's overrides with their reasons.
 
 If the blocker should clear within 4 minutes, the guard just holds the command for a moment. Otherwise Claude gets this, and the skill tells it what to do:
 
