@@ -39,7 +39,14 @@ fn is_stale(d: &Path, own: Option<&Value>) -> bool {
     };
     let pid = |k: &str| own.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
     if jbool(own, "hold") {
-        return (pid("claude_pid") != 0 && !sys::alive(pid("claude_pid"))) || now() > core::stale_at(own).unwrap_or(f64::MAX);
+        if pid("claude_pid") != 0 && !sys::alive(pid("claude_pid")) {
+            return true;
+        }
+        // a watched hold lasts exactly as long as its process, whatever the ETA says
+        return match pid("watch_pid") {
+            0 => now() > core::stale_at(own).unwrap_or(f64::MAX),
+            w => !sys::alive(w),
+        };
     }
     !sys::alive(pid("pid"))
 }
@@ -133,10 +140,9 @@ pub fn stamp_agent(sid: &str, agent: &str, names: &[String], since: f64) -> usiz
 pub fn release_agent(sid: &str, agent: &str) -> usize {
     let mut n = 0;
     for name in held_names() {
-        let dirs: Vec<PathBuf> =
-            holders(&name).into_iter().filter(|h| h.s("session") == sid && h.s("agent") == agent).map(|h| h.dir).collect();
-        n += dirs.len();
-        release(&dirs);
+        let hs: Vec<Holder> = holders(&name).into_iter().filter(|h| h.s("session") == sid && h.s("agent") == agent).collect();
+        n += hs.len();
+        release_holders(&hs.iter().collect::<Vec<_>>());
     }
     n
 }
@@ -150,7 +156,7 @@ pub fn waiter(name: &str, me: &Me) -> PathBuf {
     p
 }
 
-pub fn waiters(name: &str) -> Vec<String> {
+pub fn waiter_records(name: &str) -> Vec<Value> {
     let mut out = vec![];
     let Ok(rd) = fs::read_dir(rdir(name)) else { return out };
     for e in rd.flatten() {
@@ -159,13 +165,21 @@ pub fn waiters(name: &str) -> Vec<String> {
             continue;
         }
         match read_json(&p) {
-            Some(w) if sys::alive(w.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32) => out.push(display(&w)),
+            Some(w) if sys::alive(w.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32) => out.push(w),
             _ => {
                 let _ = fs::remove_file(&p);
             }
         }
     }
     out
+}
+
+pub fn waiters(name: &str) -> Vec<String> {
+    waiter_records(name).iter().map(display).collect()
+}
+
+pub fn others_waiting(name: &str, sid: &str) -> bool {
+    waiter_records(name).iter().any(|w| jstr(w, "session") != sid)
 }
 
 pub struct Ask<'a> {
@@ -175,6 +189,8 @@ pub struct Ask<'a> {
     pub hold: bool,
     pub kind: &'a str,
     pub exclusive: bool,
+    pub watch_pid: Option<u32>,
+    pub preemptible: bool,
 }
 
 pub fn acquire(name: &str, me: &Me, ask: &Ask) -> R<Vec<PathBuf>> {
@@ -187,6 +203,12 @@ pub fn acquire(name: &str, me: &Me, ask: &Ask) -> R<Vec<PathBuf>> {
     o.insert("kind".into(), json!(ask.kind));
     o.insert("hold".into(), json!(ask.hold));
     o.insert("t0".into(), json!(now()));
+    if let Some(w) = ask.watch_pid {
+        o.insert("watch_pid".into(), json!(w));
+    }
+    if ask.preemptible {
+        o.insert("preemptible".into(), json!(true));
+    }
     o.insert("eta".into(), json!(ask.eta.map(|e| now() + e)));
     o.insert("cmd".into(), json!(ask.cmd.join(" ").chars().take(300).collect::<String>()));
 
@@ -243,5 +265,26 @@ pub fn release(dirs: &[PathBuf]) {
     for d in dirs.iter().rev() {
         let _ = fs::remove_file(d.join("owner.json"));
         let _ = fs::remove_dir(d);
+    }
+}
+
+// for holders listed earlier: the slot may have been taken over since, and the new owner's lock must survive
+pub fn release_holders(hs: &[&Holder]) {
+    for h in hs.iter().rev() {
+        let name = h.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let grave = h.dir.with_file_name(format!("{name}.rel.{}.{}", std::process::id(), (now() * 1e9) as u64));
+        // Windows: a reader may have owner.json open for a moment
+        if !(0..5).any(|i| {
+            if i > 0 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            fs::rename(&h.dir, &grave).is_ok()
+        }) {
+            continue;
+        }
+        let same = read_json(&grave.join("owner.json")).is_none_or(|o| jf(&o, "t0") == jf(&h.o, "t0") && jstr(&o, "session") == h.s("session"));
+        if same || fs::rename(&grave, &h.dir).is_err() {
+            let _ = fs::remove_dir_all(&grave);
+        }
     }
 }

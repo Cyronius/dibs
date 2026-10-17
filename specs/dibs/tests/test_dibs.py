@@ -367,3 +367,94 @@ def test_override_does_not_pass_a_measurement(box):
     d = box.hook("DIBS_OVERRIDE='pod idles' python train.py", "sess-bbbb-2222")
     p.communicate(timeout=90)
     assert d and "measurement by alpha-1f" in d["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def backdate(box, name, slot=0):
+    o = box.owner(name, slot)
+    o["t0"], o["eta"] = time.time() - 7200, time.time() - 3600
+    (box.home / "state" / "held" / name / str(slot) / "owner.json").write_text(json.dumps(o))
+
+
+# Traces: DIBS-HOLD-WATCH
+def test_watched_hold_outlives_its_eta_until_the_process_exits(box):
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    try:
+        assert "while pid" in box.run("hold", "gpu", "--eta", "5m", "--pid", str(worker.pid)).stdout
+        backdate(box, "gpu")
+        second = box.bg("run", "gpu", "--", sys.executable, "-c", "print('second ran')", env=box.b)
+        time.sleep(2)
+        assert second.poll() is None
+        worker.kill()
+        worker.wait()
+        out = second.communicate(timeout=60)[0]
+        assert "second ran" in out and "which is gone" in out
+    finally:
+        worker.kill()
+
+
+# Traces: DIBS-HOLD-WATCH
+def test_hold_refuses_a_pid_that_is_not_running(box):
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    r = box.run("hold", "gpu", "--eta", "5m", "--pid", str(dead.pid))
+    assert r.returncode != 0 and "isn't running" in r.stderr + r.stdout and not box.held("gpu")
+
+
+YIELD_WAIT = """
+import os, sys, time
+f = os.environ['DIBS_YIELD_FILE']
+end = time.time() + 30
+while not os.path.exists(f) and time.time() < end:
+    time.sleep(0.1)
+print('yielded' if os.path.exists(f) else 'no yield')
+"""
+
+
+# Traces: DIBS-PREEMPT
+def test_waiter_from_another_session_creates_the_yield_file(box):
+    first = box.bg("run", "gpu", "--preemptible", "--", sys.executable, "-c", YIELD_WAIT)
+    assert box.until(lambda: box.held("gpu"))
+    second = box.bg("run", "gpu", "--", sys.executable, "-c", "print('second ran')", env=box.b)
+    out1, out2 = first.communicate(timeout=60)[0], second.communicate(timeout=60)[0]
+    assert "yielded" in out1 and "second ran" in out2
+
+
+# Traces: DIBS-PREEMPT
+def test_waiter_from_the_same_session_does_not_ask_for_a_yield(box):
+    code = "import os, time; time.sleep(3); print('yielded' if os.path.exists(os.environ['DIBS_YIELD_FILE']) else 'no yield')"
+    first = box.bg("run", "gpu", "--preemptible", "--", sys.executable, "-c", code)
+    assert box.until(lambda: box.held("gpu"))
+    second = box.bg("run", "gpu", "--", sys.executable, "-c", "print('second ran')")
+    out1, out2 = first.communicate(timeout=60)[0], second.communicate(timeout=60)[0]
+    assert "no yield" in out1 and "second ran" in out2
+
+
+def test_requeue_without_preemptible_is_refused(box):
+    r = box.run("run", "gpu", "--requeue", "--", sys.executable, "-c", "pass")
+    assert r.returncode != 0 and "--preemptible" in r.stderr + r.stdout
+
+
+YIELDER = """
+import os, pathlib, sys, time
+log = pathlib.Path(sys.argv[1])
+first = not log.exists()
+with log.open('a') as f:
+    f.write('A' + chr(10))
+if first:
+    y = os.environ['DIBS_YIELD_FILE']
+    end = time.time() + 30
+    while not os.path.exists(y) and time.time() < end:
+        time.sleep(0.1)
+    sys.exit(75)
+"""
+
+
+# Traces: DIBS-REQUEUE
+def test_requeue_lets_the_waiter_run_before_the_yielder_reruns(box):
+    log = box.tmp / "order.log"
+    a = box.bg("run", "gpu", "--preemptible", "--requeue", "--", sys.executable, "-c", YIELDER, str(log))
+    assert box.until(lambda: log.exists())
+    b = box.bg("run", "gpu", "--", sys.executable, "-c", f"open({str(log)!r}, 'a').write('B' + chr(10))", env=box.b)
+    a.communicate(timeout=90)
+    b.communicate(timeout=90)
+    assert a.returncode == 0 and log.read_text().split() == ["A", "B", "A"]

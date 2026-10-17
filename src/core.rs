@@ -525,7 +525,9 @@ pub fn stale_at(own: &Value) -> Option<f64> {
 pub fn describe(own: &Value) -> String {
     let purpose = jstr(own, "purpose");
     let what = if purpose.is_empty() { short_cmd(jstr(own, "cmd")) } else { purpose.to_string() };
+    let watch = own.get("watch_pid").and_then(Value::as_u64).unwrap_or(0);
     let when = match jf(own, "eta").filter(|e| *e != 0.0) {
+        Some(eta) if watch != 0 => format!("while pid {watch} runs (ETA ~{})", hhmm(Some(eta))),
         Some(eta) => format!("until ~{} (stale at {})", hhmm(Some(eta)), hhmm(stale_at(own))),
         None => format!("since {}", hhmm(jf(own, "t0"))),
     };

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -97,6 +97,16 @@ pub fn lower_priority(pid: u32) -> bool {
 
 pub fn normal_priority_flags() -> u32 {
     NORMAL_PRIORITY_CLASS
+}
+
+pub fn new_group_flags() -> u32 {
+    0x0000_0200 // CREATE_NEW_PROCESS_GROUP: lets CTRL_BREAK reach only the child
+}
+
+pub fn ask_to_stop(pid: u32) {
+    unsafe {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+    }
 }
 
 // the parent ignores Ctrl-C while a child runs, so the child decides and the parent still releases its locks

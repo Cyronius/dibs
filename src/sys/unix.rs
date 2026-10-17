@@ -62,6 +62,16 @@ pub fn normal_priority_flags() -> u32 {
     0 // a child can't undo an inherited nice without privileges
 }
 
+pub fn new_group_flags() -> u32 {
+    0
+}
+
+pub fn ask_to_stop(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+}
+
 pub fn ignore_interrupts() {
     unsafe {
         libc::signal(libc::SIGINT, libc::SIG_IGN);

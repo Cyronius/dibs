@@ -1,3 +1,4 @@
+use dibs::locks::{release_holders, Holder};
 use dibs::core::{self, mine, short_cmd, split_label, stale_at, who};
 use dibs::hook::override_of;
 use dibs::sys::Procs;
@@ -82,4 +83,23 @@ fn override_prefix_gives_the_reason_and_the_rest_of_the_command() {
         let (w, r) = override_of(cmd);
         assert_eq!((w.as_deref(), r.trim()), (why, rest), "{cmd}");
     }
+}
+
+// Traces: DIBS-RELEASE
+#[test]
+fn release_leaves_a_slot_that_changed_owner() {
+    let root = std::env::temp_dir().join(format!("dibs-rel-{}", std::process::id()));
+    let (mine, theirs) = (root.join("0"), root.join("1"));
+    for d in [&mine, &theirs] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("owner.json"), json!({"session": "NEW", "t0": 200.0}).to_string()).unwrap();
+    }
+    std::fs::write(mine.join("owner.json"), json!({"session": "OLD", "t0": 100.0}).to_string()).unwrap();
+    let listed = |dir: &std::path::Path, session: &str, t0: f64| Holder { dir: dir.to_path_buf(), o: json!({"session": session, "t0": t0}) };
+    // listed as OLD/100 but slot 1 now belongs to NEW/200; slot 0 still matches
+    let (stale_view, current_view) = (listed(&theirs, "OLD", 100.0), listed(&mine, "OLD", 100.0));
+    release_holders(&[&stale_view, &current_view]);
+    assert!(theirs.join("owner.json").exists());
+    assert!(!mine.exists());
+    std::fs::remove_dir_all(&root).unwrap();
 }

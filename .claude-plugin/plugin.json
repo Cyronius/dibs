@@ -1,7 +1,7 @@
 {
   "name": "dibs",
   "displayName": "dibs",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "🙋 Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding.",
   "author": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
   "homepage": "https://github.com/Cyronius/dibs",

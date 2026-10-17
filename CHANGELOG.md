@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- `dibs hold --pid <n>`: the hold lasts while process `n` runs, past the ETA, and frees when it exits. Without it, an overrunning benchmark lost its hold at ETA + grace and a second job could start on top of it.
+- `dibs release` no longer removes a lock another session took over between listing and removing it.
+- `dibs run --preemptible`: when another session queues, dibs creates `$DIBS_YIELD_FILE` (and with `--yield-signal` sends SIGTERM / CTRL_BREAK). `--requeue` reruns the command after it exits 75, once the waiter has the lock.
+
 ## 0.3.1
 
 - A command can carry an override past the pressure check: `DIBS_OVERRIDE='<reason>' <command>` (PowerShell: `$env:DIBS_OVERRIDE = '<reason>'; <command>`). It never gets past a measurement or another session's lock. Each override is logged to `state/overrides.jsonl`, and `dibs status` shows the last hour's. The pressure denial names the override and says when it is allowed.

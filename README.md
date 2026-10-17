@@ -69,6 +69,8 @@ Builds are x64 for Windows, Linux and macOS. For another architecture, add it to
 | Keep a dev server's port | `dibs run port-3000 -- npm run dev` |
 | Get a benchmark number you can trust | `dibs run --measure -- python bench.py` (prints CLEAN or NOISY) |
 | Keep resources across several commands | `dibs hold gpu --eta 45m`, then `dibs release gpu` |
+| Keep a hold while a benchmark runs, however long it takes | `dibs hold --measure --eta 45m --pid <benchmark pid>` (frees when that process exits) |
+| Background job that steps aside for others | `dibs run gpu --preemptible --requeue -- python label.py`; when another session queues, dibs creates the file in `$DIBS_YIELD_FILE` (add `--yield-signal` for SIGTERM / CTRL_BREAK). With `--requeue`, exit 75 hands over and reruns afterwards |
 | Keep the whole machine for an A/B series | `dibs hold --measure --eta 45m`, runs, `dibs release --measure` |
 | Push back your ETA | `dibs extend gpu --eta 20m` |
 | Wait until something is free | `dibs wait gpu` (or `--measure`, `--pressure`, `--disk 40`) |
@@ -166,7 +168,7 @@ Environment: `DIBS_HOME` moves the home folder, `DIBS_SESSION` and `DIBS_NAME` g
 
 - A lock slot is a directory. `mkdir` is atomic on every OS, so two processes can't both create it. The holder's details sit in an `owner.json` inside.
 - A `run` lock belongs to its process and frees when the process exits, even if it crashes.
-- A `hold` belongs to the session. It frees on `release`, when the session exits, or at ETA + max(10 minutes, 25% of the span). Nobody stays stuck behind a forgotten hold.
+- A `hold` belongs to the session. It frees on `release`, when the session exits, or at ETA + max(10 minutes, 25% of the span). Nobody stays stuck behind a forgotten hold. A hold taken with `--pid` instead lasts as long as that process, so a benchmark that overruns its ETA keeps the machine.
 - Subagents share their session's id, but each `run` is its own process, so siblings still take turns. A `hold` taken by the main agent covers the whole session. A `hold` taken by a subagent covers only that subagent: the hook sees which subagent made each call, records it on the hold, and holds its siblings back. It ends when the subagent stops. Outside the hook, `DIBS_AGENT` names the agent.
 - Several resources are always taken in sorted order, so two callers can't deadlock.
 - No daemon and no server. One static binary of about 700 KB, starting in milliseconds.

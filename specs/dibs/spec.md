@@ -105,6 +105,7 @@ A run lock is stale when its process is gone. A hold is stale when its session's
 - A slot whose owner pid has exited is taken over, and stderr names the old holder.
 - A hold with an ETA an hour past is taken over.
 - `stale_at` is ETA + 600 s for a 10-minute span and ETA + 2000 s for an 8000 s span.
+- A hold with a live `--pid` is not taken over at ETA + grace (DIBS-HOLD-WATCH).
 
 ### DIBS-RELEASE: Only the holder's session releases, unless forced
 **Applies to:** dibs
@@ -113,6 +114,40 @@ A run lock is stale when its process is gone. A hold is stale when its session's
 **Acceptance criteria:**
 - Session B's `dibs release gpu` on A's hold prints "only that session" and the hold stays; with `--force` it is released.
 - A subagent's hold follows DIBS-AGENT-HOLD-SCOPE.
+- If a slot changed owner after `release` listed it (the hold went stale and another session took it), `release` leaves the new owner's lock in place.
+
+### DIBS-HOLD-WATCH: A hold can last as long as a process
+**Applies to:** dibs
+**Verification:** test
+
+`dibs hold <res> --eta <d> --pid <n>` ties the hold to process `n`. While `n` is running the hold is not stale at ETA + grace, so a benchmark that overruns its estimate keeps its lock. When `n` exits the hold is stale at once. A hold whose session's Claude process is gone is still stale. Without `--pid`, DIBS-STALE applies unchanged.
+
+**Acceptance criteria:**
+- With `--pid` of a live process and the owner's ETA long past, another session's `run` keeps waiting.
+- After that process exits, the waiting `run` takes the slot and stderr names the old holder.
+- `--pid` of a process that isn't running is refused and nothing is held.
+
+### DIBS-PREEMPT: A preemptible run is asked to yield when another session queues
+**Applies to:** dibs
+**Verification:** test
+
+`dibs run <res> --preemptible -- <cmd>` passes `DIBS_YIELD_FILE` (a path that doesn't exist yet) to `<cmd>`. When a session other than the holder's is waiting for a named resource, dibs creates that file; with `--yield-signal` it also sends SIGTERM (Unix) or CTRL_BREAK (Windows). dibs never kills the command: one that ignores the request keeps the lock. `status` marks the holder `[preemptible]`. Not allowed with `--measure`.
+
+**Acceptance criteria:**
+- Session B queues for a resource held by session A's preemptible run: the file appears, A's command sees it, and B then runs.
+- A waiter from the holder's own session creates no file.
+- `--requeue` or `--yield-signal` without `--preemptible` is refused.
+
+**Verification (manual, `--yield-signal`):** run `dibs run gpu --preemptible --yield-signal -- <a script that prints on SIGTERM / CTRL_BREAK>`, queue `dibs run gpu -- echo hi` from another session, and confirm the script prints within a few seconds. On Windows the script must handle CTRL_BREAK (`signal.SIGBREAK` in Python).
+
+### DIBS-REQUEUE: A yielding run reruns after the waiter has had its turn
+**Applies to:** dibs
+**Verification:** test
+
+With `--preemptible --requeue`, if the command exits 75 dibs releases the lock, waits until a waiting session holds a slot (or no other session waits, or 60 s pass), then queues again and reruns the command. Any other exit code ends `run` and becomes its exit code.
+
+**Acceptance criteria:**
+- A's command exits 75 on its first run and 0 on its second; B queued during the first. B's command starts before A's second run, and A's final exit code is 0.
 
 ### DIBS-WAIT: `wait` blocks until free and prints one line
 **Applies to:** dibs

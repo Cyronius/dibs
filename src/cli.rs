@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::core::{self, describe, hhmm, jf, jstr, now, read_json, state, write_json, Cfg, Me, Problem, MACHINE, R};
+use crate::core::{self, describe, hhmm, jbool, jf, jstr, now, read_json, state, write_json, Cfg, Me, Problem, MACHINE, R};
 use crate::{hook, locks, probes, sys, VERSION};
 
-const VALUE_FLAGS: [&str; 5] = ["--label", "--tag", "--eta", "--path", "--disk"];
+const VALUE_FLAGS: [&str; 6] = ["--label", "--tag", "--eta", "--path", "--disk", "--pid"];
 
 fn usage() -> String {
     format!(
@@ -17,9 +17,13 @@ fn usage() -> String {
 
   dibs run <res ...> [--label <what>] [--tag <worker>] [--eta 40m] [--new] -- <cmd ...>
         run <cmd> holding the resources; they free when it exits
+  dibs run <res ...> --preemptible [--requeue] [--yield-signal] -- <cmd ...>
+        when another session queues, create $DIBS_YIELD_FILE (and with --yield-signal send
+        SIGTERM / CTRL_BREAK); with --requeue, exit code 75 hands over, then reruns <cmd>
   dibs run --measure [<res ...>] [--eta 30m] -- <cmd ...>
         take the whole machine, wait until it's quiet, run <cmd>, print CLEAN or NOISY
-  dibs hold <res ...> | --measure  --eta 45m [--label <what>]     keep resources across several commands
+  dibs hold <res ...> | --measure  --eta 45m [--label <what>] [--pid <n>]
+        keep resources across several commands (--pid: lasts while process <n> runs, past the ETA)
   dibs release <res ...> | --measure | --all [--force]           end a hold (--force: someone else's)
   dibs extend <res ...> --eta 20m                                push out your hold's ETA
   dibs wait <res ...> | --measure | --pressure | --disk <GB>     block until free, print one FREE line
@@ -110,25 +114,83 @@ fn exit_code(s: std::process::ExitStatus) -> i32 {
     s.code().unwrap_or(1)
 }
 
-fn spawn_and_wait(cmd: &[String], normal_priority: bool) -> i32 {
+struct Yield<'a> {
+    names: &'a [String],
+    sid: String,
+    signal: bool,
+}
+
+fn spawn_and_wait(cmd: &[String], normal_priority: bool, y: Option<&Yield>) -> i32 {
     let exe = if sys::WINDOWS { core::which(&cmd[0]).map(|p| p.to_string_lossy().into_owned()).unwrap_or(cmd[0].clone()) } else { cmd[0].clone() };
     let mut c = Command::new(exe);
     c.args(&cmd[1..]);
+    let yield_file = y.map(|_| state("yield").join(format!("{}.{}", std::process::id(), (now() * 1e9) as u64)));
+    if let Some(f) = &yield_file {
+        let _ = fs::create_dir_all(state("yield"));
+        c.env("DIBS_YIELD_FILE", f);
+    }
     #[cfg(windows)]
-    if normal_priority {
+    {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(sys::normal_priority_flags());
+        let flags = if normal_priority { sys::normal_priority_flags() } else { 0 } | if y.is_some_and(|y| y.signal) { sys::new_group_flags() } else { 0 };
+        if flags != 0 {
+            c.creation_flags(flags);
+        }
     }
     #[cfg(not(windows))]
     let _ = normal_priority;
     sys::ignore_interrupts();
-    match c.status() {
-        Ok(s) => exit_code(s),
+    let Some(y) = y else {
+        return match c.status() {
+            Ok(s) => exit_code(s),
+            Err(e) => {
+                eprintln!("dibs: can't run {}: {e}", cmd[0]);
+                127
+            }
+        };
+    };
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
         Err(e) => {
             eprintln!("dibs: can't run {}: {e}", cmd[0]);
-            127
+            return 127;
         }
+    };
+    let (mut asked, mut tick) = (false, 0u32);
+    let rc = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break exit_code(s),
+            Ok(None) => {}
+            Err(_) => break 1,
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        tick += 1;
+        if !asked && tick % 5 == 0 && y.names.iter().any(|n| locks::others_waiting(n, &y.sid)) {
+            asked = true;
+            println!("dibs: another session is waiting; asking {} to yield", cmd[0]);
+            if let Some(f) = &yield_file {
+                let _ = fs::write(f, "");
+            }
+            if y.signal {
+                sys::ask_to_stop(child.id());
+            }
+        }
+    };
+    if let Some(f) = &yield_file {
+        let _ = fs::remove_file(f);
     }
+    rc
+}
+
+// after a yield, let a waiting session take the lock before this one queues again
+fn await_handoff(names: &[String], sid: &str) {
+    let t0 = now();
+    while now() - t0 < 60.0
+        && names.iter().any(|n| locks::others_waiting(n, sid) && !locks::holders(n).iter().any(|h| h.s("session") != sid))
+    {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_secs(1));
 }
 
 fn cmd_run(a: &[String]) -> R<i32> {
@@ -143,41 +205,59 @@ fn cmd_run(a: &[String]) -> R<i32> {
     let names: Vec<String> = tg.iter().filter(|t| t.0 != MACHINE).map(|t| t.0.clone()).collect();
     let quiet = measure.then(|| cfg.f("machine", "quiet_cpu_max"));
     let kind = if measure { "measure" } else { "run" };
+    let (preemptible, requeue, signal) = (has(pre, "--preemptible"), has(pre, "--requeue"), has(pre, "--yield-signal"));
+    if (requeue || signal) && !preemptible {
+        return Err(Problem::new("--requeue and --yield-signal go with --preemptible"));
+    }
+    if preemptible && measure {
+        return Err(Problem::new("a measurement can't be preemptible"));
+    }
+    let yielder = preemptible.then(|| Yield { names: &names, sid: me.session.clone(), signal });
     let mut held: Vec<PathBuf> = vec![];
     let result = (|| -> R<i32> {
         loop {
+            loop {
+                if !measure {
+                    wait_for_machine();
+                }
+                probes::wait_quiet(&cfg, &names, quiet);
+                for (n, cap, ex) in &tg {
+                    let ask = locks::Ask { cmd, cap: *cap, eta, hold: false, kind, exclusive: *ex, watch_pid: None, preemptible };
+                    held.extend(locks::acquire(n, &me, &ask)?);
+                }
+                let r = probes::activity(&cfg, &names, if measure { 10.0 } else { 3.0 }, quiet);
+                if r.is_empty() {
+                    break;
+                }
+                println!("dibs: other work started meanwhile ({}); backing off", r.join("; "));
+                locks::release(&held);
+                held.clear();
+            }
             if !measure {
-                wait_for_machine();
+                let rc = spawn_and_wait(cmd, false, yielder.as_ref());
+                if requeue && rc == 75 {
+                    locks::release(&held);
+                    held.clear();
+                    println!("dibs: {} yielded; queueing again", names.join(", "));
+                    await_handoff(&names, &me.session);
+                    continue;
+                }
+                return Ok(rc);
             }
-            probes::wait_quiet(&cfg, &names, quiet);
-            for (n, cap, ex) in &tg {
-                let ask = locks::Ask { cmd, cap: *cap, eta, hold: false, kind, exclusive: *ex };
-                held.extend(locks::acquire(n, &me, &ask)?);
-            }
-            let r = probes::activity(&cfg, &names, if measure { 10.0 } else { 3.0 }, quiet);
+            println!("dibs: CLEAN");
+            let mon = probes::Monitor::start(&cfg, &names);
+            let rc = spawn_and_wait(cmd, true, None);
+            let mut r: HashSet<String> = probes::activity(&cfg, &names, 10.0, quiet).into_iter().collect();
+            r.extend(mon.finish());
+            let mut r: Vec<String> = r.into_iter().collect();
+            r.sort();
             if r.is_empty() {
-                break;
+                println!("dibs: CLEAN after");
+            } else {
+                println!("dibs: NOISY after [{}]", r.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(", "));
             }
-            println!("dibs: other work started meanwhile ({}); backing off", r.join("; "));
-            locks::release(&held);
-            held.clear();
+            return Ok(rc);
         }
-        if !measure {
-            return Ok(spawn_and_wait(cmd, false));
-        }
-        println!("dibs: CLEAN");
-        let mon = probes::Monitor::start(&cfg, &names);
-        let rc = spawn_and_wait(cmd, true);
-        let mut r: HashSet<String> = probes::activity(&cfg, &names, 10.0, quiet).into_iter().collect();
-        r.extend(mon.finish());
-        let mut r: Vec<String> = r.into_iter().collect();
-        r.sort();
-        if r.is_empty() {
-            println!("dibs: CLEAN after");
-        } else {
-            println!("dibs: NOISY after [{}]", r.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(", "));
-        }
-        Ok(rc)
     })();
     locks::release(&held);
     result
@@ -194,13 +274,36 @@ fn cmd_hold(a: &[String]) -> R<i32> {
             "dibs: warning: this session already holds {h:?} and now asks for more. Take a hold's whole set at once, or two sessions can deadlock until an ETA passes."
         );
     }
+    let watch_pid = match opt(a, "--pid") {
+        Some(p) => {
+            let n = p.parse::<u32>().map_err(|_| Problem::new("--pid wants a process id, e.g. --pid 4242"))?;
+            if !sys::alive(n) {
+                return Err(Problem::new(format!("pid {n} isn't running")));
+            }
+            Some(n)
+        }
+        None => None,
+    };
     for (n, cap, ex) in &tg {
-        let ask = locks::Ask { cmd: &["hold".to_string()], cap: *cap, eta: Some(eta), hold: true, kind: if *ex { "measure" } else { "hold" }, exclusive: *ex };
+        let ask = locks::Ask {
+            cmd: &["hold".to_string()],
+            cap: *cap,
+            eta: Some(eta),
+            hold: true,
+            kind: if *ex { "measure" } else { "hold" },
+            exclusive: *ex,
+            watch_pid,
+            preemptible: false,
+        };
         locks::acquire(n, &me, &ask)?;
     }
     let all = tg.iter().map(|t| t.0.as_str()).collect::<Vec<_>>();
     let shown = if has(a, "--measure") { "--measure".to_string() } else { all.join(" ") };
-    println!("HELD: {} until ~{}. Run `dibs release {shown}` when done.", all.join(", "), hhmm(Some(now() + eta)));
+    let until = match watch_pid {
+        Some(w) => format!("while pid {w} runs (ETA ~{})", hhmm(Some(now() + eta))),
+        None => format!("until ~{}", hhmm(Some(now() + eta))),
+    };
+    println!("HELD: {} {until}. Run `dibs release {shown}` when done.", all.join(", "));
     Ok(0)
 }
 
@@ -227,7 +330,7 @@ fn cmd_release(a: &[String]) -> R<i32> {
     for n in names {
         let hs = locks::holders(&n);
         let (ours, rest): (Vec<_>, Vec<_>) = hs.iter().partition(|h| core::controls(&h.o, &sid, &agent) || has(a, "--force"));
-        locks::release(&ours.iter().map(|h| h.dir.clone()).collect::<Vec<_>>());
+        locks::release_holders(&ours);
         if !ours.is_empty() {
             println!("{n}: released");
         } else if let (Some(h), false) = (rest.first(), has(a, "--all")) {
@@ -422,7 +525,15 @@ fn cmd_status(a: &[String]) -> R<i32> {
     if held.iter().any(|n| n == MACHINE) {
         shown.insert(0, MACHINE.into());
     }
-    let tag = |h: &locks::Holder| if h.is_hold() { " [hold]" } else { "" };
+    let tag = |h: &locks::Holder| {
+        if h.is_hold() {
+            " [hold]"
+        } else if jbool(&h.o, "preemptible") {
+            " [preemptible]"
+        } else {
+            ""
+        }
+    };
     for n in shown {
         let (hs, cap, ws) = (locks::holders(&n), cfg.capacity(&n), locks::waiters(&n));
         if n == MACHINE && hs.is_empty() {
