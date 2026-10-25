@@ -1,0 +1,14 @@
+# Commit this as .dibs.toml at a repo root. Every session in the repo, and in its worktrees, gets the same rules.
+
+# The local integration database: one suite at a time.
+[resource.testdb]
+match = '\b(?:npm run test:integration|pytest tests/integration|dotnet ef database update)\b'
+
+# The dev server port.
+[resource.port-3000]
+match = '\bnpm run dev\b'
+
+# The shared staging API key allows two suites at once.
+[resource.staging-api]
+capacity = 2
+match = '\bpytest tests/e2e\b'

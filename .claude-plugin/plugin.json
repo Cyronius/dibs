@@ -1,0 +1,11 @@
+{
+  "name": "dibs",
+  "displayName": "dibs",
+  "version": "0.5.0",
+  "description": "🙋 Share machine capacity across parallel sessions, lock exclusive resources, and isolate benchmarks.",
+  "author": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
+  "homepage": "https://github.com/Cyronius/dibs",
+  "repository": "https://github.com/Cyronius/dibs",
+  "license": "MIT",
+  "keywords": ["locks", "gpu", "npu", "parallel-agents", "benchmarks", "shared-machine"]
+}

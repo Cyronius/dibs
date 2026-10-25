@@ -1,0 +1,19 @@
+#!/bin/sh
+d=${0%/*}
+case "$OSTYPE" in
+  msys*|cygwin*) t=windows-x64 ;;
+  *) case "$(uname -s)-$(uname -m)" in
+       Linux-x86_64) t=linux-x64 ;;
+       Darwin-*) t=macos-x64 ;;   # Apple silicon runs the x64 build under Rosetta
+       *) t=none ;;
+     esac ;;
+esac
+for b in "$d/$t/dibs.exe" "$d/$t/dibs" "$d/../target/release/dibs.exe" "$d/../target/release/dibs"; do
+  [ -f "$b" ] && exec "$b" "$@"
+done
+case "$1" in
+  hook) exit 0 ;;
+  session-start) echo "dibs: no build for $(uname -s) $(uname -m), so the dibs guard is off. See https://github.com/Cyronius/dibs/releases or build with cargo."; exit 0 ;;
+esac
+echo "dibs: no build for $(uname -s) $(uname -m). See https://github.com/Cyronius/dibs/releases or build with cargo." >&2
+exit 127

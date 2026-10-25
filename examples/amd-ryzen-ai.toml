@@ -1,0 +1,24 @@
+# The setup dibs was built on: a Ryzen AI laptop where the NPU, the Radeon iGPU and the CPU cores
+# share one power budget and one pool of memory bandwidth. Add the names of your own NPU and GPU tools.
+
+[machine]
+cpu_max = 90
+ram_floor_gb = 8
+commit_max = 95
+quiet_cpu_max = 25
+
+# NPU runs. xrt-smi lists every process with an NPU context, so work outside dibs shows up too.
+[resource.npu]
+match = '\b(?:flm|xrt-smi)(?:\.exe)?\b'
+probe = { command = 'C:\Windows\System32\AMD\xrt-smi.exe examine -r all', parser = "xrt", ignore = ["WorkloadsSessionHost"] }
+resident = ["flm.exe"]    # an idle model server keeps tens of GB of NPU memory without burning CPU
+
+# iGPU runs. Windows reports GPU load per process.
+[resource.gpu]
+match = '\b(?:llama-[\w-]+|ollama)(?:\.exe)?\b'
+probe = { kind = "gpu-counters", min_pct = 20 }
+
+# Kernel, xclbin and MSVC builds share capacity outside measurements.
+[resource.build]
+shared = true
+match = '\b(?:msbuild|cl\.exe|v\+\+|wsl -e .*make)\b'

@@ -1,0 +1,12 @@
+{
+  "name": "dibs",
+  "owner": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
+  "description": "dibs: share capacity and isolate benchmarks across Claude Code sessions",
+  "plugins": [
+    {
+      "name": "dibs",
+      "source": { "source": "url", "url": "https://github.com/Cyronius/dibs.git", "ref": "dist" },
+      "description": "🙋 Share machine capacity across parallel sessions, lock exclusive resources, and isolate benchmarks."
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+# Changelog
+
+## 0.5.0
+
+- Normal CPU, build and network reservations now track concurrent activity rather than granting exclusive slots. `resource.<name>.shared` makes the policy explicit; GPU/NPU, ports and databases keep capacity enforcement by default.
+- Measurements acquire the machine gate, drain declared work, wait for quiet and retain final noise checks. Ordinary reservations no longer stall unrelated throughput.
+- Measured holds discover active resource names and release those reservations when the series ends.
+- Hooks return immediately with explicit blocking reasons. Sustained pressure delays recognized new heavy launches after a configurable 15-second grace; lightweight work stays available.
+- Fixed Unix process-table parsing for padded PID columns, restoring process ancestry and nested-run detection.
+
+**Upgrade:** Existing `capacity` settings on CPU, build and network resources are ignored unless `shared = false` is set. `hook.wait_inline_s` is now ignored. Use `--measure` only for performance timing or throughput; keep setup, downloads, builds, training, correctness checks and analysis outside the measured reservation. See the [upgrade guide](https://github.com/Cyronius/dibs#upgrading-to-05).
+
+## 0.4.0
+
+- `dibs hold --pid <n>`: the hold lasts while process `n` runs, past the ETA, and frees when it exits. Without it, an overrunning benchmark lost its hold at ETA + grace and a second job could start on top of it.
+- `dibs release` no longer removes a lock another session took over between listing and removing it.
+- `dibs run --preemptible`: when another session queues, dibs creates `$DIBS_YIELD_FILE` (and with `--yield-signal` sends SIGTERM / CTRL_BREAK). `--requeue` reruns the command after it exits 75, once the waiter has the lock.
+
+## 0.3.1
+
+- A command can carry an override past the pressure check: `DIBS_OVERRIDE='<reason>' <command>` (PowerShell: `$env:DIBS_OVERRIDE = '<reason>'; <command>`). It never gets past a measurement or another session's lock. Each override is logged to `state/overrides.jsonl`, and `dibs status` shows the last hour's. The pressure denial names the override and says when it is allowed.
+
+## 0.3.0
+
+- Rewritten in Rust: one small native binary, no Python. The hook runs in a few milliseconds instead of about 150.
+- Builds for Windows, Linux and macOS (x64). The plugin ships them from a `dist` branch; grab a binary from the releases page to use dibs outside Claude Code.
+- `match` patterns use Rust regex syntax: no lookaround or backreferences.
+- Gone: the Python package, `uv tool install`, `DIBS_PYTHON`, and the `psutil` option.
+
+## 0.2.0
+
+- A subagent's `hold` covers only that subagent. Its siblings and the main agent wait for it, and only the owner or the main agent can release or extend it. A main-agent hold still covers every subagent.
+- The guard hook reads the calling subagent from the hook payload, records it on holds a subagent takes, and ends a subagent's holds when it stops (new PostToolUse and SubagentStop hooks).
+- `DIBS_AGENT` names an agent for processes the hook doesn't see.
+
+## 0.1.0
+
+First release.
+
+- Any name is a resource: `dibs run gpu -- ...`, `dibs run network -- ...`, `dibs run port-3000 -- ...`.
+- `capacity` lets N holders share a resource.
+- A new name close to a known one is refused ("did you mean `gpu`?") unless you pass `--new`.
+- Holders show by Claude Code session name, with an optional `--tag` for a subagent and `--label` for the purpose.
+- Sibling subagents of one session take turns; a session's `hold` covers all of its subagents.
+- `--measure` takes the whole machine, waits for quiet, and reports CLEAN or NOISY.
+- `dibs disk claim` reserves disk space for big downloads.
+- Claude Code plugin: `dibs` on the Bash PATH, a skill, a PreToolUse guard, and a SessionStart priority drop on Windows.
+- Probes for work outside dibs: process names, any command (`xrt-smi`, `nvidia-smi`), Windows GPU counters, network throughput.
+- Optional config in your dibs home and in a repo's `.dibs.toml`.
