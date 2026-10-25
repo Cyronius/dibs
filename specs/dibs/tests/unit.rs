@@ -4,6 +4,16 @@ use dibs::hook::override_of;
 use dibs::sys::Procs;
 use serde_json::json;
 
+#[cfg(unix)]
+#[test]
+fn process_table_contains_current_process_and_parent_links() {
+    let table = dibs::sys::procs();
+    let pid = std::process::id();
+    let parent = table.get(&pid).expect("ps output must parse padded PID columns").0;
+    assert!(parent > 0 && table.contains_key(&parent));
+    assert!(dibs::sys::ancestors(Some(&table)).contains(&parent));
+}
+
 fn hold(agent: &str) -> serde_json::Value {
     json!({"session": "S", "hold": true, "agent": agent})
 }

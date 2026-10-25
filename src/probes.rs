@@ -9,7 +9,7 @@ use std::time::Duration;
 use regex_lite::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
-use crate::core::{now, read_json, state, write_json, Cfg};
+use crate::core::{self, now, read_json, state, write_json, Cfg};
 use crate::sys;
 
 const GPU_IGNORE: [&str; 7] = ["dwm.exe", "explorer.exe", "code.exe", "chrome.exe", "msedge.exe", "firefox.exe", "claude.exe"];
@@ -59,6 +59,28 @@ pub fn pressure(cfg: &Cfg) -> Vec<String> {
         out.push(format!("memory commit {c:.0}% (limit {}%)", cfg.f("machine", "commit_max")));
     }
     out
+}
+
+// A transient spike does not close admission. Samples must remain above a limit
+// for the grace interval; stale samples do not establish sustained pressure.
+pub fn sustained_pressure(cfg: &Cfg) -> Vec<String> {
+    let p = pressure(cfg);
+    let file = state("admission-pressure.json");
+    let t = now();
+    let old = read_json(&file);
+    let since = old.as_ref().filter(|v| v.get("active").and_then(Value::as_bool) == Some(true) && t - core::jf(v, "last").unwrap_or(0.0) < 30.0)
+        .and_then(|v| core::jf(v, "since")).unwrap_or(t);
+    write_json(&file, &json!({"last": t, "active": !p.is_empty(), "since": if p.is_empty() { t } else { since }}));
+    if !p.is_empty() && t - since >= cfg.f("hook", "pressure_grace_s") { p } else { vec![] }
+}
+
+pub fn wait_admission(cfg: &Cfg) {
+    if !cfg.flag("hook", "pressure") || std::env::var("DIBS_OVERRIDE").is_ok_and(|v| !v.trim().is_empty()) { return; }
+    let mut said = false;
+    while !sustained_pressure(cfg).is_empty() {
+        if !said { println!("dibs: sustained pressure: waiting to admit new heavy work"); said = true; }
+        sleep(5.0);
+    }
 }
 
 fn capture(spec: &Value, timeout_s: f64) -> Option<String> {

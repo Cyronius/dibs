@@ -13,7 +13,7 @@ const VALUE_FLAGS: [&str; 6] = ["--label", "--tag", "--eta", "--path", "--disk",
 
 fn usage() -> String {
     format!(
-        "dibs {VERSION}: take turns with shared resources on this machine.
+        "dibs {VERSION}: share machine capacity and isolate benchmarks.
 
   dibs run <res ...> [--label <what>] [--tag <worker>] [--eta 40m] [--new] -- <cmd ...>
         run <cmd> holding the resources; they free when it exits
@@ -76,12 +76,22 @@ fn eta_from(a: &[String], required: bool) -> R<Option<f64>> {
 
 type Target = (String, usize, bool);
 
+fn discover_active(targets: &mut Vec<Target>, cfg: &Cfg) {
+    for name in locks::held_names() {
+        if !targets.iter().any(|t| t.0 == name) {
+            targets.push((name.clone(), cfg.capacity(&name), true));
+        }
+    }
+}
+
 fn targets(a: &[String], cfg: &Cfg) -> R<Vec<Target>> {
     let names = core::resolve(&positional(a), cfg, has(a, "--new"))?;
     if has(a, "--measure") {
-        let mut every: Vec<String> = names.into_iter().chain(cfg.resources()).chain([MACHINE.to_string()]).collect();
+        let mut every: Vec<String> = names.into_iter().chain(cfg.resources()).chain(locks::held_names()).chain([MACHINE.to_string()]).collect();
         every.sort();
         every.dedup();
+        every.retain(|n| n != MACHINE);
+        every.insert(0, MACHINE.to_string());
         return Ok(every.into_iter().map(|n| (cfg.capacity(&n), n)).map(|(c, n)| (n, c, true)).collect());
     }
     if names.is_empty() {
@@ -220,12 +230,25 @@ fn cmd_run(a: &[String]) -> R<i32> {
                 if !measure {
                     wait_for_machine();
                 }
-                probes::wait_quiet(&cfg, &names, quiet);
-                for (n, cap, ex) in &tg {
-                    let ask = locks::Ask { cmd, cap: *cap, eta, hold: false, kind, exclusive: *ex, watch_pid: None, preemptible };
-                    held.extend(locks::acquire(n, &me, &ask)?);
+                if !measure {
+                    probes::wait_admission(&cfg);
+                    let exclusive: Vec<String> = names.iter().filter(|n| !cfg.shared(n)).cloned().collect();
+                    probes::wait_quiet(&cfg, &exclusive, quiet);
                 }
-                let r = probes::activity(&cfg, &names, if measure { 10.0 } else { 3.0 }, quiet);
+                let mut pending = tg.clone();
+                let mut next = 0;
+                while next < pending.len() {
+                    let (n, cap, ex) = &pending[next];
+                    let ask = locks::Ask { cmd, cap: *cap, eta, hold: false, kind, exclusive: *ex, shared: !measure && cfg.shared(n), watch_pid: None, preemptible };
+                    held.extend(locks::acquire(n, &me, &ask)?);
+                    // The gate closes admission before this final discovery,
+                    // so a newly named resource cannot escape benchmark draining.
+                    if measure && next == 0 { discover_active(&mut pending, &cfg); }
+                    next += 1;
+                }
+                let observed: Vec<String> = names.iter().filter(|n| measure || !cfg.shared(n)).cloned().collect();
+                if measure { probes::wait_quiet(&cfg, &observed, quiet); }
+                let r = probes::activity(&cfg, &observed, if measure { 10.0 } else { 3.0 }, quiet);
                 if r.is_empty() {
                     break;
                 }
@@ -284,7 +307,11 @@ fn cmd_hold(a: &[String]) -> R<i32> {
         }
         None => None,
     };
-    for (n, cap, ex) in &tg {
+    if !has(a, "--measure") { wait_for_machine(); }
+    let mut pending = tg.clone();
+    let mut next = 0;
+    while next < pending.len() {
+        let (n, cap, ex) = &pending[next];
         let ask = locks::Ask {
             cmd: &["hold".to_string()],
             cap: *cap,
@@ -292,10 +319,13 @@ fn cmd_hold(a: &[String]) -> R<i32> {
             hold: true,
             kind: if *ex { "measure" } else { "hold" },
             exclusive: *ex,
+            shared: !*ex && cfg.shared(n),
             watch_pid,
             preemptible: false,
         };
         locks::acquire(n, &me, &ask)?;
+        if has(a, "--measure") && next == 0 { discover_active(&mut pending, &cfg); }
+        next += 1;
     }
     let all = tg.iter().map(|t| t.0.as_str()).collect::<Vec<_>>();
     let shown = if has(a, "--measure") { "--measure".to_string() } else { all.join(" ") };
@@ -312,6 +342,7 @@ fn release_names(a: &[String], cfg: &Cfg) -> Vec<String> {
     if has(a, "--measure") {
         names.push(MACHINE.into());
         names.extend(cfg.resources());
+        names.extend(locks::held_names());
     }
     if has(a, "--all") {
         names.extend(locks::held_names());
@@ -502,7 +533,7 @@ fn cmd_wait(a: &[String]) -> R<i32> {
     let me = me_from(a);
     let ws: Vec<PathBuf> = names.iter().map(|n| locks::waiter(n, &me)).collect();
     loop {
-        let busy = names.iter().any(|n| !locks::blocking(n, cfg.capacity(n), None, None, None).is_empty())
+        let busy = names.iter().any(|n| !locks::policy_blocking(n, &cfg, None, None, None).is_empty())
             || !locks::blocking(MACHINE, 1, None, None, None).is_empty();
         if !busy {
             break;
@@ -539,7 +570,7 @@ fn cmd_status(a: &[String]) -> R<i32> {
         if n == MACHINE && hs.is_empty() {
             continue;
         }
-        let label = if cap > 1 { format!("{n} {}/{cap}", hs.len()) } else { n.clone() };
+        let label = if cfg.shared(&n) { format!("{n} shared ({})", hs.len()) } else if cap > 1 { format!("{n} {}/{cap}", hs.len()) } else { n.clone() };
         let first = hs.first().map(|h| format!("{}{}", describe(&h.o), tag(h))).unwrap_or_else(|| "free".into());
         let waiting = if ws.is_empty() { String::new() } else { format!("   waiting: {}", ws.join(", ")) };
         println!("{label:<16} {first}{waiting}");
@@ -665,7 +696,7 @@ fn cmd_doctor() -> R<i32> {
     }
     for n in cfg.resources() {
         let r = cfg.res(&n);
-        let mut bits = vec![format!("capacity {}", cfg.capacity(&n))];
+        let mut bits = vec![if cfg.shared(&n) { "shared activity".to_string() } else { format!("exclusive capacity {}", cfg.capacity(&n)) }];
         if r.get("match").is_some_and(|m| !m.is_null()) {
             bits.push("match".into());
         }

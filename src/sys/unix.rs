@@ -12,8 +12,13 @@ fn ps(fields: &str) -> Vec<Vec<String>> {
     let n = fields.split(',').count();
     String::from_utf8_lossy(&out)
         .lines()
-        .map(|l| l.trim().splitn(n, char::is_whitespace).map(|s| s.trim().to_string()).collect::<Vec<_>>())
-        .filter(|r| r.len() == n)
+        .map(|l| {
+            let mut fields = l.split_whitespace();
+            let mut row: Vec<String> = fields.by_ref().take(n - 1).map(String::from).collect();
+            row.push(fields.collect::<Vec<_>>().join(" "));
+            row
+        })
+        .filter(|r| r.len() == n && r.last().is_some_and(|s| !s.is_empty()))
         .collect()
 }
 

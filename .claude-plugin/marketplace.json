@@ -1,12 +1,12 @@
 {
   "name": "dibs",
   "owner": { "name": "Cyrus Attoun", "url": "https://github.com/Cyronius" },
-  "description": "dibs: take turns with shared resources across Claude Code sessions",
+  "description": "dibs: share capacity and isolate benchmarks across Claude Code sessions",
   "plugins": [
     {
       "name": "dibs",
       "source": { "source": "url", "url": "https://github.com/Cyronius/dibs.git", "ref": "dist" },
-      "description": "🙋 Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
+      "description": "🙋 Share machine capacity across parallel sessions, lock exclusive resources, and isolate benchmarks."
     }
   ]
 }

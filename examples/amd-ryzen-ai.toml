@@ -18,6 +18,7 @@ resident = ["flm.exe"]    # an idle model server keeps tens of GB of NPU memory 
 match = '\b(?:llama-[\w-]+|ollama)(?:\.exe)?\b'
 probe = { kind = "gpu-counters", min_pct = 20 }
 
-# Kernel, xclbin and MSVC builds.
+# Kernel, xclbin and MSVC builds share capacity outside measurements.
 [resource.build]
+shared = true
 match = '\b(?:msbuild|cl\.exe|v\+\+|wsl -e .*make)\b'

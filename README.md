@@ -1,6 +1,6 @@
 # dibs 🙋
 
-**Call dibs on the GPU, the NPU, the network or the test database, so your parallel Claude Code sessions take turns instead of colliding.**
+**Keep parallel sessions busy: share CPU, build and network capacity, lock exclusive resources, and isolate performance measurements.**
 
 ```sh
 dibs run gpu -- python train.py
@@ -19,11 +19,11 @@ So this kept happening:
 - With that many sessions fighting over memory and CPU, the whole machine slows to a crawl. Memory commit creeps to 99% and everything drags, me included.
 - I ask "who's on the GPU?" and the answer is `d2w`. That turns out to be a worker inside another session I'd forgotten about.
 
-I tried rules in CLAUDE.md. An agent in the middle of a task skips a rule nothing enforces. What finally worked was a lock for each thing they fight over, a hook that makes them actually wait their turn, and a status line that tells me in plain names who has what, and until when. That's dibs.
+I tried rules in CLAUDE.md. An agent in the middle of a task skips a rule nothing enforces. What finally worked was a lock for resources that cannot be shared, a separate policy for performance measurements, and a status line that tells me in plain names who is doing what, and until when. That's dibs.
 
-Now all of those sessions stay busy at once, and the machine stays snappy. Heavy work waits its turn instead of piling up, the guard holds back new commands while CPU or RAM is maxed out, and Claude runs at a lower priority than the things I'm actually touching.
+Normal work can run concurrently while capacity is available. Sustained CPU or memory pressure delays new heavy launches, and benchmark measurements get an isolated machine. On Windows, Claude runs at a lower priority than the things I'm actually touching.
 
-It isn't only for NPUs. If your agents share anything they can trip over, like a GPU, the network, a local Postgres, port 3000, a phone on a USB cable or a rate-limited API key, dibs lets them take turns.
+It isn't only for NPUs. If your agents share something that needs exclusive access, like a GPU, a local Postgres, port 3000 or a phone on a USB cable, dibs lets them take turns. CPU, builds and network transfers share capacity by default.
 
 ## Install
 
@@ -82,14 +82,32 @@ Builds are x64 for Windows, Linux and macOS. For another architecture, add it to
 
 A resource is any name: `gpu`, `npu`, `network`, `testdb`, `port-3000`, `pixel-7`. `--label` says what the run is for, `--tag` names a worker, and `--new` creates a name that looks like a typo of an existing one.
 
-Config is optional, and it's the one part you might still write yourself. It lets you share a resource between N holders (`capacity = 2` for the network), catch commands that forget to ask (`match = '\bollama\b'` for the GPU), or spot work outside dibs (`probe`). Copy from [examples/](examples/): a [general config](examples/config.toml), a [per-repo `.dibs.toml`](examples/repo.dibs.toml) for a test database and a port, and [the Ryzen AI setup](examples/amd-ryzen-ai.toml) dibs grew up on.
+Config is optional, and it's the one part you might still write yourself. It lets you share a resource between N holders (`shared = false` and `capacity = 2` for a connection pool), catch commands that forget to ask (`match = '\bollama\b'` for the GPU), or spot work outside dibs (`probe`). Copy from [examples/](examples/): a [general config](examples/config.toml), a [per-repo `.dibs.toml`](examples/repo.dibs.toml) for a test database and a port, and [the Ryzen AI setup](examples/amd-ryzen-ai.toml) dibs grew up on.
+
+## Upgrading to 0.5
+
+CPU, build and network reservations now record concurrent activity rather than filling exclusive slots. This applies even when an older config specifies `capacity` for those resources. To retain the previous slot limit, set `shared = false` explicitly:
+
+```toml
+[resource.network]
+shared = false
+capacity = 2
+```
+
+Update all clients that share the same Dibs home. Commands already running keep the policy of the binary they started with; new commands use the updated policy.
+
+GPU/NPU, ports, databases and other resource names retain capacity enforcement by default. Set `shared = true` only when jobs can safely coexist.
+
+Normal commands use `dibs run <resource> -- <command>`. Use `--measure` only for performance timing or throughput. Prepare inputs, download weights, build, train, test correctness and analyze results outside the measured reservation. Release a measured series between those phases.
+
+Hooks now return a blocking reason immediately; the legacy `hook.wait_inline_s` setting has no effect. Pressure applies to recognized new heavy launches after observations span `hook.pressure_grace_s` (15 seconds by default). Lightweight work remains available under pressure. Existing jobs are not paused or killed.
 
 ## What it looks like
 
 ```
 $ dibs status
 gpu              npu-kernels-3a ('prefill tiling A/B') until ~14:20 (stale at 14:30) [hold]   waiting: llama-bench-7c
-network 1/2      model-zoo-91/d01 ('Qwen3-32B weights') until ~14:05 (stale at 14:15)
+network shared (1) model-zoo-91/d01 ('Qwen3-32B weights') until ~14:05 (stale at 14:15)
 npu              free
 port-3000        web-ui-a2 ('npm run dev') since 09:12
 disk             model-zoo-91/d01 ('Qwen3-32B weights'): 38 of 60 GB outstanding, ETA 15:30 -> D:\models\qwen3-32b
@@ -104,13 +122,14 @@ The plugin adds three things.
 
 **A skill** that tells Claude which commands to wrap, how to give a label and an ETA, and what to do when something is busy.
 
-**A guard** (a PreToolUse hook on Bash and PowerShell). Before each command, except plain reads like `ls` and `git status`, it checks:
+**Two admission policies**, selected by the existing `--measure` flag:
 
-- Is another session measuring? Then every command waits.
-- Does another session hold a resource this command names, or whose `match` pattern it fits? Then this command waits.
-- Is CPU, free RAM or memory commit past its limit? Then the command waits, unless this session already holds a lock, or the command starts with an override: `DIBS_OVERRIDE='a billed pod is idle' ssh ...` (PowerShell: `$env:DIBS_OVERRIDE = '...'; ...`). An override never gets past a measurement or another session's lock, and `dibs status` shows the last hour's overrides with their reasons.
+- Normal runs share CPU, build and network resources. Reservations record activity; the job count does not imply the machine is full. Other resources (GPU/NPU, ports, databases) retain capacity limits. Set `resource.<name>.shared = true` for another shareable resource, or `false` to retain capacity enforcement. Shared resources ignore `capacity` and activity probes during normal admission.
+- Benchmarks reserve the machine first, drain declared work (including shared resources discovered from active records), wait for quiet, and check for noise afterward. Use `--measure` only while measuring performance, not for setup, downloads, training, correctness tests or analysis.
 
-If the blocker should clear within 4 minutes, the guard just holds the command for a moment. Otherwise Claude gets this, and the skill tells it what to do:
+**A guard** checks shell commands. Plain reads and Dibs management commands pass. A benchmark reservation blocks competing commands; an exclusive resource blocks commands naming or matching it. Sustained CPU or memory pressure delays recognized heavy launches (wrapped runs, resource matches, build/train/benchmark commands), while lightweight commands remain available. By default pressure needs observations spanning 15 seconds, with no gap of 30 seconds. Undeclared commands cannot always be classified; wrap heavy work in `dibs run`.
+
+The hook returns immediately with the blocker and a background wait command. It never silently holds a tool call. `hook.wait_inline_s` is retained as a legacy config key but has no effect.
 
 ```
 WAIT, not a refusal: gpu is held by npu-kernels-3a ('prefill tiling A/B') until ~14:20 (stale at 14:30).
@@ -136,19 +155,21 @@ dibs reads `config.toml` there, plus the nearest `.dibs.toml` at or above the wo
 
 | Key | Default | Meaning |
 |---|---|---|
-| `resource.<name>.capacity` | `1` | How many holders at once. |
+| `resource.<name>.capacity` | `1` | Maximum holders when `shared = false`; ignored for shared activity. |
+| `resource.<name>.shared` | CPU/build/network: `true`; others: `false` | Track concurrent activity without enforcing slot capacity. Benchmarks still drain it. |
 | `resource.<name>.match` | none | Regex ([Rust syntax](https://docs.rs/regex-lite): no lookaround or backreferences). The guard holds back matching commands while the resource is full. |
 | `resource.<name>.probe` | none | How to see work that doesn't use dibs. See below. |
 | `resource.<name>.resident` | `[]` | Processes that keep the device busy while idle, like a loaded model server. |
-| `machine.cpu_max` | `90` | The guard waits above this total CPU %. |
-| `machine.ram_floor_gb` | `8` | The guard waits below this much free RAM. |
-| `machine.commit_max` | `95` | The guard waits above this memory commit % (Windows). |
+| `machine.cpu_max` | `90` | Sustained readings above this total CPU % delay new heavy launches. |
+| `machine.ram_floor_gb` | `8` | Sustained readings below this free RAM delay new heavy launches. |
+| `machine.commit_max` | `95` | Sustained readings above this memory commit % delay new heavy launches (Windows). |
 | `machine.quiet_cpu_max` | `25` | `--measure` waits until total CPU is under this. |
 | `machine.disk` | home drive, `floor_gb = 15` | `disk claim` always leaves this much free. |
 | `machine.lower_claude_priority` | on for Windows | The SessionStart priority drop. |
 | `hook.enabled` | `true` | The Claude Code guard. |
-| `hook.pressure` | `true` | Whether CPU and RAM pressure hold commands back. |
-| `hook.wait_inline_s` | `240` | The guard holds a command itself when the blocker should clear within this many seconds. |
+| `hook.pressure` | `true` | Whether sustained CPU and RAM pressure delay recognized new heavy launches. |
+| `hook.pressure_grace_s` | `15` | Observed overload duration before delaying new heavy work. |
+| `hook.wait_inline_s` | `0` | Legacy key; hooks always return immediately. |
 | `measure.noise_core_pct` | `50` | A process outside the run that uses more than this % of a core makes it NOISY. |
 
 Probes:
@@ -169,15 +190,15 @@ Environment: `DIBS_HOME` moves the home folder, `DIBS_SESSION` and `DIBS_NAME` g
 - A lock slot is a directory. `mkdir` is atomic on every OS, so two processes can't both create it. The holder's details sit in an `owner.json` inside.
 - A `run` lock belongs to its process and frees when the process exits, even if it crashes.
 - A `hold` belongs to the session. It frees on `release`, when the session exits, or at ETA + max(10 minutes, 25% of the span). Nobody stays stuck behind a forgotten hold. A hold taken with `--pid` instead lasts as long as that process, so a benchmark that overruns its ETA keeps the machine.
-- Subagents share their session's id, but each `run` is its own process, so siblings still take turns. A `hold` taken by the main agent covers the whole session. A `hold` taken by a subagent covers only that subagent: the hook sees which subagent made each call, records it on the hold, and holds its siblings back. It ends when the subagent stops. Outside the hook, `DIBS_AGENT` names the agent.
-- Several resources are always taken in sorted order, so two callers can't deadlock.
+- Subagents share their session's id, but each `run` is its own process, so siblings take turns on exclusive resources and run concurrently on shared ones. A `hold` taken by the main agent covers the whole session. A `hold` taken by a subagent covers only that subagent: the hook sees which subagent made each call, records it on the hold, and holds its siblings back on exclusive resources. It ends when the subagent stops. Outside the hook, `DIBS_AGENT` names the agent.
+- Normal resource sets are taken in sorted order. Measurements take the machine gate first, then drain the resource set. Request all resources together; adding resources while holding others can deadlock callers.
 - No daemon and no server. One static binary of about 700 KB, starting in milliseconds.
 
 ## Limits
 
 - **One machine.** Locks are files on the local disk. They don't coordinate across machines.
 - **Cooperative.** A lock binds only processes that use dibs or go through the guard. `match` patterns catch the common commands, not every command.
-- **Not a throttle.** `network` and `build` take turns. They don't cap bandwidth or cores.
+- **Not a throttle.** Shared activity records do not cap bandwidth, cores or job counts. Pressure admission checks observed load; dibs does not divide CPU cores between jobs.
 - **macOS and Linux can't undo a priority drop,** so `--measure` there runs at whatever priority the session has. The quiet-machine check still applies.
 
 ## Development

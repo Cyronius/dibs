@@ -101,17 +101,18 @@ pub fn invocation(cmd: &str) -> (Option<String>, Vec<String>, Vec<String>) {
     (None, vec![], vec![])
 }
 
-#[derive(PartialEq)]
-enum Clears {
-    At(f64),
-    Unknown,
-    Pressure,
-}
-
 struct Reason {
     text: String,
-    clears: Clears,
     wait: String,
+}
+
+// Only recognized heavy launches are subject to normal-mode pressure admission.
+fn heavy(cmd: &str, cfg: &Cfg) -> bool {
+    let (verb, _, _) = invocation(cmd);
+    if verb.as_deref().is_some_and(|v| v == "run" || v == "hold") { return true; }
+    if cfg.matches.values().any(|r| r.is_match(cmd)) { return true; }
+    static R: OnceLock<Regex> = OnceLock::new();
+    rx(&R, r"(?:^|[;&|\n]\s*|\s)(?:cargo\s+(?:build|test|bench)|npm\s+(?:run\s+build|test)|ninja|make|cmake\s+--build|python[0-9.]*\s+\S*(?:train|bench)\S*)\b").is_match(cmd)
 }
 
 // the second value is the override reason, when it is what let the command past the pressure check
@@ -130,30 +131,30 @@ fn blockers(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> (Vec<Reason>, Optio
     let table = if held.is_empty() { Default::default() } else { sys::procs() };
     let m = if held.iter().any(|n| n == MACHINE) { locks::blocking(MACHINE, 1, Some(sid), Some(&table), Some(agent)) } else { vec![] };
     if let Some(h) = m.first() {
-        let clears = h.eta().map_or(Clears::Unknown, Clears::At);
-        out.push(Reason { text: format!("the whole machine is reserved for a measurement by {}", describe(&h.o)), clears, wait: "--measure".into() });
+        out.push(Reason { text: format!("the whole machine is reserved for a measurement by {}", describe(&h.o)), wait: "--measure".into() });
     } else {
         for name in held.iter().filter(|n| *n != MACHINE) {
             let matched = cfg.matches.get(name).is_some_and(|r| r.is_match(cmd));
-            if !(names.contains(name) || measure || matched) {
+            // The measurement CLI owns draining active work after taking the
+            // machine gate. A shared-resource wait would otherwise return FREE
+            // immediately and cause an endless hook retry.
+            if measure || !(names.contains(name) || matched) {
                 continue;
             }
-            let b = locks::blocking(name, cfg.capacity(name), Some(sid), Some(&table), Some(agent));
+            let b = locks::policy_blocking(name, cfg, Some(sid), Some(&table), Some(agent));
             if let Some(first) = b.first() {
-                let eta = b.iter().map(|h| h.eta().unwrap_or(9e99)).fold(f64::MAX, f64::min);
-                out.push(Reason { text: format!("{name} is held by {}", describe(&first.o)), clears: Clears::At(eta), wait: name.clone() });
+                out.push(Reason { text: format!("{name} is held by {} (exclusive resource)", describe(&first.o)), wait: name.clone() });
             }
         }
     }
     let mut used = None;
-    if cfg.flag("hook", "pressure") && !(!held.is_empty() && !locks::session_holds(sid, agent).is_empty()) {
-        // a holder owns the machine, so pressure doesn't hold it back
-        let p = probes::pressure(cfg);
+    if cfg.flag("hook", "pressure") && heavy(cmd, cfg) {
+        let p = probes::sustained_pressure(cfg);
         if !p.is_empty() {
             if why.is_some() {
                 used = why;
             } else {
-                out.push(Reason { text: format!("the machine is under pressure: {}", p.join(", ")), clears: Clears::Pressure, wait: "--pressure".into() });
+                out.push(Reason { text: format!("the machine is under pressure (sustained load; new heavy work): {}", p.join(", ")), wait: "--pressure".into() });
             }
         }
     }
@@ -172,6 +173,7 @@ fn foreign_holds(cmd: &str, sid: &str, cfg: &Cfg, agent: &str) -> Vec<locks::Hol
         if has("--measure") {
             names.push(MACHINE.into());
             names.extend(cfg.resources());
+            names.extend(locks::held_names());
         }
         if has("--all") {
             names.extend(locks::held_names());
@@ -258,6 +260,7 @@ fn stamp_hold(cmd: &str, data: &Value, sid: &str, agent: &str, cfg: &Cfg) {
     if toks.iter().any(|t| t == "--measure") {
         names.push(MACHINE.into());
         names.extend(cfg.resources());
+        names.extend(locks::held_names());
     }
     names.sort();
     names.dedup();
@@ -294,27 +297,14 @@ fn run() -> R<()> {
         deny_foreign(&invocation(plain).0.unwrap_or_default(), h);
         return Ok(());
     }
-    let deadline = now() + cfg.f("hook", "wait_inline_s");
-    loop {
-        let (r, used) = blockers(cmd, sid, &cfg, agent);
-        if r.is_empty() {
-            if let Some(why) = used {
-                log_override(sid, agent, &why, cmd);
-            }
-            note_hold(plain, &data, agent);
-            return Ok(());
-        }
-        let far = r.iter().any(|x| match x.clears {
-            Clears::Pressure => false,
-            Clears::Unknown => true,
-            Clears::At(t) => t > deadline,
-        });
-        if now() >= deadline || far {
-            deny(&r);
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_secs(10));
+    let (r, used) = blockers(cmd, sid, &cfg, agent);
+    if r.is_empty() {
+        if let Some(why) = used { log_override(sid, agent, &why, cmd); }
+        note_hold(plain, &data, agent);
+    } else {
+        deny(&r);
     }
+    Ok(())
 }
 
 // a broken guard must never stop work

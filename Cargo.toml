@@ -1,8 +1,8 @@
 [package]
 name = "dibs"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-description = "Call dibs on the GPU, NPU, network or test database, so parallel Claude Code sessions take turns instead of colliding."
+description = "Share machine capacity across parallel sessions, lock exclusive resources, and isolate benchmarks."
 license = "MIT"
 repository = "https://github.com/Cyronius/dibs"
 authors = ["Cyrus Attoun"]

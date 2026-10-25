@@ -1,3 +1,4 @@
+import pytest
 import json, subprocess, sys, time
 
 from pathlib import Path
@@ -49,7 +50,7 @@ def test_other_session_waits_for_a_held_resource(box):
 
 # Traces: DIBS-CAPACITY
 def test_capacity_two_admits_two_holders(box):
-    box.config("[resource.network]\ncapacity = 2\n")
+    box.config("[resource.network]\nshared = false\ncapacity = 2\n")
     a = box.bg("run", "network", *sleep_cmd(4))
     b = box.bg("run", "network", *sleep_cmd(4), env=box.b)
     assert box.until(lambda: len(list((box.home / "state/held/network").glob("[0-9]"))) == 2)
@@ -319,21 +320,21 @@ def test_hook_can_be_turned_off(box):
 
 # Traces: DIBS-HOOK-PRESSURE
 def test_hook_holds_commands_back_under_pressure(box):
-    (box.home / "config.toml").write_text("[machine]\nram_floor_gb = 100000\n[hook]\nwait_inline_s = 0\n")
+    (box.home / "config.toml").write_text("[machine]\nram_floor_gb = 100000\n[hook]\npressure_grace_s = 0\nwait_inline_s = 0\n")
     d = box.hook("npm run build", "sess-bbbb-2222")
     assert d and "under pressure" in d["hookSpecificOutput"]["permissionDecisionReason"]
     assert "dibs wait --pressure" in d["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-PRESSED = "[machine]\nram_floor_gb = 100000\n[hook]\nwait_inline_s = 0\n"
+PRESSED = "[machine]\nram_floor_gb = 100000\n[hook]\npressure_grace_s = 0\nwait_inline_s = 0\n"
 
 
 # Traces: DIBS-HOOK-OVERRIDE
 def test_override_passes_pressure_and_an_empty_reason_does_not(box):
     (box.home / "config.toml").write_text(PRESSED)
-    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true", "sess-bbbb-2222") is None
-    assert box.hook("$env:DIBS_OVERRIDE = 'pod idles'; ssh host true", "sess-bbbb-2222") is None
-    for cmd in ("ssh host true", "DIBS_OVERRIDE='' ssh host true", "DIBS_OVERRIDE='  ' ssh host true"):
+    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' npm run build", "sess-bbbb-2222") is None
+    assert box.hook("$env:DIBS_OVERRIDE = 'pod idles'; npm run build", "sess-bbbb-2222") is None
+    for cmd in ("npm run build", "DIBS_OVERRIDE='' npm run build", "DIBS_OVERRIDE='  ' npm run build"):
         d = box.hook(cmd, "sess-bbbb-2222")
         assert d and "under pressure" in d["hookSpecificOutput"]["permissionDecisionReason"], cmd
         assert "DIBS_OVERRIDE=" in d["hookSpecificOutput"]["permissionDecisionReason"]
@@ -342,7 +343,7 @@ def test_override_passes_pressure_and_an_empty_reason_does_not(box):
 # Traces: DIBS-HOOK-OVERRIDE
 def test_override_is_logged_and_shown_in_status(box):
     (box.home / "config.toml").write_text(PRESSED)
-    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true", "sess-bbbb-2222", env=box.b) is None
+    assert box.hook("DIBS_OVERRIDE='pod idles at $0.22/hr' npm run build", "sess-bbbb-2222", env=box.b) is None
     lines = (box.home / "state" / "overrides.jsonl").read_text().splitlines()
     assert len(lines) == 1
     entry = json.loads(lines[0])
@@ -458,3 +459,95 @@ def test_requeue_lets_the_waiter_run_before_the_yielder_reruns(box):
     a.communicate(timeout=90)
     b.communicate(timeout=90)
     assert a.returncode == 0 and log.read_text().split() == ["A", "B", "A"]
+
+# Shared activity must not imply that the machine is full.
+@pytest.mark.parametrize('resource', ['cpu', 'build', 'network'])
+def test_shared_runs_overlap_and_are_visible(box, resource):
+    first = box.bg('run', resource, *sleep_cmd(5))
+    try:
+        assert box.until(lambda: box.held(resource))
+        second = box.run('run', resource, '--', sys.executable, '-c', "print('concurrent')", env=box.b, timeout=3)
+        assert second.returncode == 0 and 'concurrent' in second.stdout
+        assert first.poll() is None
+        assert box.hook(f'dibs run {resource} -- python task.py', 'sess-bbbb-2222') is None
+        assert f'{resource} shared' in box.run('status').stdout
+    finally:
+        first.wait(timeout=20)
+
+
+def test_shared_policy_can_be_disabled_for_a_real_exclusive_resource(box):
+    box.config('[resource.build]\nshared = false\n')
+    box.run('hold', 'build', '--eta', '5m')
+    d = box.hook('dibs run build -- make', 'sess-bbbb-2222')
+    assert d and 'exclusive resource' in d['hookSpecificOutput']['permissionDecisionReason']
+
+
+def test_benchmark_waits_for_shared_activity_and_blocks_new_work(box):
+    first = box.bg('run', 'cpu', *sleep_cmd(5))
+    benchmark = None
+    try:
+        assert box.until(lambda: box.held('cpu'))
+        benchmark = box.bg('run', '--measure', '--', sys.executable, '-c', "print('measured')", env=box.b)
+        assert box.until(lambda: box.held('machine'))
+        assert first.poll() is None
+        # CPU was discovered from live records, without a resource.cpu config entry.
+        assert not any(box.owner('cpu', i).get('kind') == 'measure' for i in [0])
+        d = box.hook('npm run build', 'sess-cccc-3333')
+        assert d and 'measurement' in d['hookSpecificOutput']['permissionDecisionReason']
+        assert box.hook('git status', 'sess-cccc-3333') is None
+        out = benchmark.communicate(timeout=90)[0]
+        assert first.poll() is not None
+        assert 'measured' in out and 'CLEAN after' in out
+    finally:
+        first.wait(timeout=20)
+        if benchmark and benchmark.poll() is None:
+            benchmark.terminate()
+            benchmark.wait(timeout=10)
+
+
+def test_pressure_spike_does_not_block_and_sustained_pressure_only_blocks_heavy_work(box):
+    (box.home / 'config.toml').write_text('[machine]\nram_floor_gb = 100000\n[hook]\npressure_grace_s = 15\nwait_inline_s = 240\n')
+    assert box.hook('npm run build', 'sess-bbbb-2222') is None
+    sample = box.home / 'state' / 'admission-pressure.json'
+    record = json.loads(sample.read_text())
+    record['since'] = time.time() - 20
+    sample.write_text(json.dumps(record))
+    assert box.hook('python -c "print(1)"', 'sess-bbbb-2222') is None
+    assert box.hook('ssh host true', 'sess-bbbb-2222') is None
+    start = time.monotonic()
+    d = box.hook('npm run build', 'sess-bbbb-2222')
+    assert time.monotonic() - start < 3  # Old inline wait setting must not stall the hook.
+    assert d and 'sustained load' in d['hookSpecificOutput']['permissionDecisionReason']
+
+
+def test_shared_build_hold_does_not_block_matching_commands_or_waits(box):
+    box.config("[resource.build]\nmatch = 'cargo build'\n")
+    box.run('hold', 'build', '--eta', '5m')
+    assert box.hook('cargo build', 'sess-bbbb-2222') is None
+    assert box.hook('dibs run --measure -- python bench.py', 'sess-bbbb-2222') is None
+    assert 'FREE: build' in box.run('wait', 'build', env=box.b, timeout=3).stdout
+
+
+@pytest.mark.parametrize('resource', ['cpu', 'gpu'])
+def test_benchmark_gate_blocks_new_normal_cli_runs(box, resource):
+    box.run('hold', '--measure', '--eta', '5m')
+    second = box.bg('run', resource, '--', sys.executable, '-c', "print('after benchmark')", env=box.b)
+    try:
+        time.sleep(0.5)
+        assert second.poll() is None
+        box.run('release', '--measure')
+        assert 'after benchmark' in second.communicate(timeout=15)[0]
+    finally:
+        box.run('release', '--measure')
+        if second.poll() is None:
+            second.terminate()
+            second.wait(timeout=10)
+
+
+def test_measured_hold_releases_discovered_resources(box):
+    # Remember a resource absent from config, just as an earlier CLI run would.
+    assert box.run('run', 'cpu', '--', sys.executable, '-c', 'pass').returncode == 0
+    assert box.run('hold', '--measure', '--eta', '5m').returncode == 0
+    assert box.owner('cpu')['kind'] == 'measure'
+    box.run('release', '--measure')
+    assert not box.held('machine') and not box.held('cpu')

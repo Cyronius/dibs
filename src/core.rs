@@ -144,6 +144,11 @@ impl Cfg {
     pub fn res(&self, name: &str) -> &Value {
         &self.v["resource"][name]
     }
+    // Shared resources record activity without treating job count as machine capacity.
+    pub fn shared(&self, name: &str) -> bool {
+        name != MACHINE && self.res(name).get("shared").and_then(Value::as_bool)
+            .unwrap_or(matches!(name, "cpu" | "build" | "network"))
+    }
     pub fn capacity(&self, name: &str) -> usize {
         if name == MACHINE {
             return 1;
@@ -157,7 +162,7 @@ pub fn defaults() -> Value {
         "machine": {"cpu_max": 90, "ram_floor_gb": 8, "commit_max": 95, "quiet_cpu_max": 25,
                     "lower_claude_priority": cfg!(windows),
                     "disk": {"path": home_dir().to_string_lossy(), "floor_gb": 15}},
-        "hook": {"enabled": true, "pressure": true, "wait_inline_s": 240},
+        "hook": {"enabled": true, "pressure": true, "pressure_grace_s": 15, "wait_inline_s": 0},
         "measure": {"noise_core_pct": 50, "ignore": ["system idle process", "idle", "kernel_task", "dwm.exe"]},
         "resource": {},
     })
@@ -225,6 +230,9 @@ pub fn load_config(cwd: Option<&str>) -> R<Cfg> {
         }
         if !r.is_object() {
             return Err(Problem::new(format!("[resource.{name}] must be a table")));
+        }
+        if r.get("shared").is_some_and(|v| !v.is_boolean()) {
+            return Err(Problem::new(format!("[resource.{name}] shared must be true or false")));
         }
         if r.get("capacity").is_some_and(|c| !c.as_u64().is_some_and(|n| n >= 1)) {
             return Err(Problem::new(format!("[resource.{name}] capacity must be a whole number of 1 or more")));

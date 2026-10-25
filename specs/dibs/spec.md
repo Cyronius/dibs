@@ -36,16 +36,16 @@ A name that is not declared, not held and not used in the last 90 days, but is w
 **Applies to:** dibs
 **Verification:** test
 
-`capacity = N` in config admits N holders at once. Each holder takes one slot. `status` shows `<name> <held>/<N>` when N > 1.
+For exclusive resources (`shared = false`), `capacity = N` in config admits N holders at once. Each holder takes one slot. `status` shows `<name> <held>/<N>` when N > 1.
 
 **Acceptance criteria:**
-- With `capacity = 2`, two runs hold `network` at once, a third waits until one ends, and `status` shows `network 2/2`.
+- With `shared = false` and `capacity = 2`, two runs hold `network` at once, a third waits until one ends, and `status` shows `network 2/2`.
 
 ### DIBS-SIBLINGS: Subagents of one session take turns
 **Applies to:** dibs
 **Verification:** test
 
-Run locks are owned by their process. A run lock held by another process of the same session blocks, unless that process is an ancestor of the caller.
+Run locks are owned by their process. On exclusive resources, a run lock held by another process of the same session blocks, unless that process is an ancestor of the caller. Shared activity records do not block sibling runs.
 
 **Acceptance criteria:**
 - Two `dibs run gpu` commands from one session run one after the other; the second prints "held by <session>/<tag> ('<purpose>')".
@@ -175,7 +175,7 @@ Inside Claude Code, a holder is named by its session's name (from Claude Code's 
 **Applies to:** dibs
 **Verification:** test
 
-`dibs run --measure -- <cmd>` takes `machine` and every declared resource exclusively, waits until probes show no outside work and total CPU is under `quiet_cpu_max`, prints `dibs: CLEAN`, runs `<cmd>` (at normal priority on Windows), then prints `dibs: CLEAN after` or `dibs: NOISY after [...]`. While it runs, the hook holds back every other session's non-trivial command.
+`dibs run --measure -- <cmd>` takes `machine` first, discovers live resource names, drains shared activity and takes declared resources exclusively, waits until probes show no outside work and total CPU is under `quiet_cpu_max`, prints `dibs: CLEAN`, runs `<cmd>` (at normal priority on Windows), then prints `dibs: CLEAN after` or `dibs: NOISY after [...]`. While it runs, the hook holds back every other session's non-trivial command.
 
 **Acceptance criteria:**
 - A measured run prints `dibs: CLEAN` and `dibs: CLEAN after`, and during it the hook denies session B's `python train.py` with "measurement by <A's name>".
@@ -223,7 +223,7 @@ Config merges defaults, the user config in the dibs home, and the nearest `.dibs
 **Applies to:** dibs
 **Verification:** test
 
-The PreToolUse hook denies a Bash or PowerShell command, with a message that starts `WAIT, not a refusal` and names `dibs wait <res>`, when another session (or a sibling run) holds a full resource that the command names in a `dibs run`/`dibs hold`, or whose `match` pattern (Rust regex syntax: no lookaround or backreferences, case-insensitive) the command matches. It never blocks plain reads, `dibs` status/wait/release/extend/disk/doctor commands, or the holder's own session's hold. `[hook] enabled = false` turns it off. Any internal error allows the command.
+The PreToolUse hook denies a Bash or PowerShell command, with a message that starts `WAIT, not a refusal` and names `dibs wait <res>`, when another session (or a sibling run) holds a full exclusive resource that the command names in a `dibs run`/`dibs hold`, or whose `match` pattern (Rust regex syntax: no lookaround or backreferences, case-insensitive) the command matches. It never blocks plain reads, `dibs` status/wait/release/extend/disk/doctor commands, or the holder's own session's hold. `[hook] enabled = false` turns it off. Any internal error allows the command.
 
 **Acceptance criteria:**
 - While A holds gpu, B's `dibs run gpu -- python train.py` is denied with "gpu is held by alpha-1f" and "dibs wait gpu".
@@ -235,10 +235,10 @@ The PreToolUse hook denies a Bash or PowerShell command, with a message that sta
 **Applies to:** dibs
 **Verification:** test
 
-When `[hook] pressure` is on and the session holds nothing, the hook denies non-trivial commands while CPU is over `cpu_max`, free RAM under `ram_floor_gb`, or memory commit over `commit_max`, and names `dibs wait --pressure`, unless the command carries an override (DIBS-HOOK-OVERRIDE).
+When `[hook] pressure` is on, the hook denies recognized new heavy launches after observed pressure lasts `pressure_grace_s` (default 15 seconds), while CPU is over `cpu_max`, free RAM under `ram_floor_gb`, or memory commit over `commit_max`, and names `dibs wait --pressure`, unless the command carries an override (DIBS-HOOK-OVERRIDE).
 
 **Acceptance criteria:**
-- With `ram_floor_gb = 100000`, `npm run build` is denied with "under pressure" and "dibs wait --pressure".
+- With `ram_floor_gb = 100000` and `pressure_grace_s = 0`, `npm run build` is denied with "under pressure" and "dibs wait --pressure".
 
 ### DIBS-HOOK-OVERRIDE: An override with a reason gets one command past pressure, and is logged
 **Applies to:** dibs
@@ -247,7 +247,7 @@ When `[hook] pressure` is on and the session holds nothing, the hook denies non-
 A command that starts with `DIBS_OVERRIDE='<reason>'` (Bash; double quotes or a bare word also work) or `$env:DIBS_OVERRIDE = '<reason>';` (PowerShell), with a non-empty reason, is not held back by pressure. It is still held back by a `--measure` reservation and by another session's hold on a resource it names or matches. When the override is what let the command through, the hook appends a line (time, session, agent, session name, reason, the first 120 characters of the command) to `state/overrides.jsonl`, and `dibs status` prints the last hour's overrides, newest first. A pressure denial names the override and when it is allowed: waiting costs money, or the user said not to wait.
 
 **Acceptance criteria:**
-- With `ram_floor_gb = 100000`, `DIBS_OVERRIDE='pod idles at $0.22/hr' ssh host true` and `$env:DIBS_OVERRIDE = 'pod idles'; ssh host true` are allowed; `ssh host true`, `DIBS_OVERRIDE='' ssh host true` and `DIBS_OVERRIDE='  ' ssh host true` are denied with "under pressure" and "DIBS_OVERRIDE=".
+- With `ram_floor_gb = 100000` and `pressure_grace_s = 0`, `DIBS_OVERRIDE='pod idles at $0.22/hr' npm run build` and `$env:DIBS_OVERRIDE = 'pod idles'; npm run build` are allowed; `npm run build`, `DIBS_OVERRIDE='' npm run build` and `DIBS_OVERRIDE='  ' npm run build` are denied with "under pressure" and "DIBS_OVERRIDE=".
 - After the allowed override from session bravo-2e, `overrides.jsonl` has one line with that reason and name, and `dibs status` prints "bravo-2e" and "'pod idles at $0.22/hr'".
 - While A holds gpu (`match = '\bollama\b'`), B's `DIBS_OVERRIDE='pod idles' ollama run llama3` is denied with "gpu is held by alpha-1f".
 - While A holds the machine with `--measure`, B's `DIBS_OVERRIDE='pod idles' python train.py` is denied with "measurement by alpha-1f".
@@ -293,3 +293,10 @@ With nothing held, `dibs hook` finishes in under 15 ms (median) when run directl
 1. With `examples/amd-ryzen-ai.toml` on a Ryzen AI machine, start an NPU model outside dibs; `dibs status --activity` lists it as an NPU context.
 2. Start a GPU load outside dibs; `dibs status --activity` lists it with its GPU %.
 3. With `net-counters` and a download running, `dibs status --activity` shows "link busy".
+
+
+### DIBS-NORMAL-SHARING: Share throughput, isolate measurements
+
+CPU, build and network default to shared activity records with no slot limit. Other resources retain capacity enforcement. `resource.<name>.shared` overrides this choice; capacity is ignored while shared. Normal shared runs skip device/activity quiet probes. Benchmarks acquire the machine gate first, discover live resources, drain their records, then wait for quiet. New normal runs and holds respect a benchmark gate. Status labels shared resources and shows their active count.
+
+The hook returns immediately, including when an old config sets `wait_inline_s`. Sustained pressure requires observations spanning `hook.pressure_grace_s` (default 15 seconds), with gaps shorter than 30 seconds. It delays only recognized heavy launches; existing holds no longer exempt new heavy launches. Tests can set a zero grace. This supersedes earlier hook pressure and inline wait behavior.

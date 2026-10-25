@@ -1,11 +1,11 @@
 ---
 name: dibs
-description: Take turns with other Claude sessions on this machine's shared resources (GPU, NPU, network, test databases, ports, heavy builds, disk) with the `dibs` command. Use before GPU or NPU runs, benchmarks or any number you will report, heavy builds, big downloads, anything a project's .dibs.toml names, when the user says lock, reserve, dibs or "machine busy", and whenever a command comes back "WAIT, not a refusal".
+description: Coordinate machine capacity, exclusive resources and isolated benchmarks across Claude sessions with the `dibs` command. Use before GPU or NPU runs, performance measurements, heavy builds, big downloads, anything a project's .dibs.toml names, when the user says lock, reserve, dibs or "machine busy", and whenever a command comes back "WAIT, not a refusal".
 ---
 
 # dibs
 
-Several Claude sessions, and the user's own work, share this machine. `dibs` lets them take turns. It is on your PATH. A resource is any lowercase name (`gpu`, `npu`, `network`, `testdb`, `port-3000`). Your session's name is recorded for you, so other sessions and the user can see who holds what.
+Several Claude sessions, and the user's own work, share this machine. `dibs` shares capacity for normal work, locks exclusive resources and isolates benchmarks. It is on your PATH. A resource is any lowercase name (`gpu`, `npu`, `network`, `testdb`, `port-3000`). Your session's name is recorded for you, so other sessions and the user can see who holds what.
 
 ## Which command
 
@@ -13,7 +13,7 @@ Several Claude sessions, and the user's own work, share this machine. `dibs` let
 |---|---|
 | A run on one resource | `dibs run gpu --label "<what it's for>" --eta 10m -- <cmd>` |
 | A run on several resources | `dibs run gpu npu --label "<what>" --eta 10m -- <cmd>` |
-| Any number you will report (tok/s, latency, A/B) | `dibs run --measure --label "<what>" --eta 30m -- <cmd>` |
+| Performance measurement (tok/s, latency, A/B) | `dibs run --measure --label "<what>" --eta 30m -- <cmd>` |
 | A series of commands (an A/B pair, a server plus a client) | `dibs hold gpu --eta 45m --label "<what>"`, the commands, then `dibs release gpu` |
 | A series of measured runs | `dibs hold --measure --eta 45m`, each run as `dibs run --measure -- <cmd>`, then `dibs release --measure` |
 | A download or build output over 10 GB | `dibs disk claim <GB> --eta 2h --path <target dir>`, then `dibs disk release` |
@@ -21,6 +21,8 @@ Several Claude sessions, and the user's own work, share this machine. `dibs` let
 - `--label` is a short purpose ("dataset shards 1-4"). Waiters and the user see it.
 - In a subagent or worker, also pass `--tag <short name>`. Status then shows `<session>/<tag>`.
 - Use the names the project uses. `dibs status` and `.dibs.toml` show them. A new name close to a known one is refused ("did you mean `gpu`?"); pass `--new` only if you really mean a new resource.
+- Normal mode shares CPU, build and network reservations. These are activity records, not exclusive slots. Other resources retain capacity limits; `shared = true/false` in resource config controls this.
+- Use `--measure` only for the actual performance measurement. Setup, downloads, training, correctness checks and analysis use normal mode. Do not hold the whole machine during those phases.
 - `--measure` takes the whole machine. It waits until no other declared work runs and total CPU is low, then prints `dibs: CLEAN` before and `dibs: CLEAN after` or `dibs: NOISY after [...]` after. Rerun a NOISY run. Never report its number.
 - Measured and long runs go in a background Bash. Waiting for a quiet machine can take longer than the Bash tool's timeout.
 - A `hold` takes its whole set at once. Asking for more while you hold some can deadlock two sessions until an ETA passes.
@@ -38,10 +40,10 @@ Several Claude sessions, and the user's own work, share this machine. `dibs` let
 A hook checks Bash and PowerShell commands, except plain reads (`ls`, `cat`, `git status`, ...) and `dibs` itself:
 
 - Another session runs a measurement: every command waits.
-- Another session holds a resource and the command names it or matches its `match` pattern: the command waits.
-- CPU, free RAM or memory commit is past its limit: the command waits, unless your session holds a lock.
+- Another session fills an exclusive resource and the command names it or matches its `match` pattern: the command waits. Shared activity alone never blocks normal work.
+- CPU, free RAM or memory commit stays past its limit for the pressure grace interval: new recognized heavy launches wait. Lightweight work remains available.
 
-If the blocker should clear within 4 minutes, the hook holds the command and then lets it run. Otherwise you get a message that starts `WAIT, not a refusal`. That is not the user saying no:
+The hook returns immediately with `WAIT, not a refusal` and states whether it protects benchmark isolation, an exclusive resource, or sustained pressure. That is not the user saying no:
 
 1. Run the background wait it names.
 2. Tell the user what you are waiting on and until when.

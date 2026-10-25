@@ -110,6 +110,15 @@ pub fn blocking(name: &str, cap: usize, sid: Option<&str>, table: Option<&Procs>
     }
 }
 
+// Normal shared activity never fills a resource; benchmark owners remain exclusive.
+pub fn policy_blocking(name: &str, cfg: &core::Cfg, sid: Option<&str>, table: Option<&Procs>, agent: Option<&str>) -> Vec<Holder> {
+    if cfg.shared(name) {
+        holders(name).into_iter().filter(|h| h.s("kind") == "measure" && !mine(&h.o, sid, table, agent)).collect()
+    } else {
+        blocking(name, cfg.capacity(name), sid, table, agent)
+    }
+}
+
 pub fn session_holds(sid: &str, agent: &str) -> Vec<Holder> {
     if sid.is_empty() {
         return vec![];
@@ -189,6 +198,7 @@ pub struct Ask<'a> {
     pub hold: bool,
     pub kind: &'a str,
     pub exclusive: bool,
+    pub shared: bool,
     pub watch_pid: Option<u32>,
     pub preemptible: bool,
 }
@@ -227,7 +237,43 @@ pub fn acquire(name: &str, me: &Me, ask: &Ask) -> R<Vec<PathBuf>> {
             if hs.iter().any(|h| mine(&h.o, None, Some(&table), None)) {
                 return Ok(std::mem::take(&mut got)); // re-entrant: our session's hold, or our parent's run
             }
-            if ask.exclusive {
+            if name != core::MACHINE && !ask.exclusive
+                && !blocking(core::MACHINE, 1, Some(&me.session), Some(&table), Some(&me.agent)).is_empty()
+            {
+                if now() - last > 120.0 {
+                    println!("dibs: benchmark isolation: waiting for the machine reservation");
+                    last = now();
+                }
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            if ask.shared {
+                let measured = hs.iter().any(|h| h.s("kind") == "measure")
+                    || !blocking(core::MACHINE, 1, Some(&me.session), Some(&table), Some(&me.agent)).is_empty();
+                if !measured {
+                    // Atomic mkdir assigns an activity record, with no fixed slot limit.
+                    if let Some(d) = (0..hs.len() + 2).find_map(take) {
+                        got.push(d);
+                        // A measurement may have started while the record was created.
+                        if blocking(core::MACHINE, 1, Some(&me.session), None, Some(&me.agent)).is_empty() {
+                            break;
+                        }
+                        release(&got);
+                        got.clear();
+                    }
+                }
+            } else if ask.exclusive {
+                // Measurements must drain every shared activity record, including slots
+                // above the resource's former capacity.
+                if hs.iter().any(|h| !mine(&h.o, None, Some(&table), None)) {
+                    w.get_or_insert_with(|| waiter(name, me));
+                    if now() - last > 120.0 {
+                        println!("dibs: benchmark isolation: waiting for {name}, held by {}", describe(&hs[0].o));
+                        last = now();
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
                 while let Some(d) = todo.first().and_then(|i| take(*i)) {
                     got.push(d);
                     todo.remove(0);
@@ -237,7 +283,11 @@ pub fn acquire(name: &str, me: &Me, ask: &Ask) -> R<Vec<PathBuf>> {
                 }
             } else if let Some(d) = (0..ask.cap).find_map(|i| take(i)) {
                 got.push(d);
-                break;
+                if blocking(core::MACHINE, 1, Some(&me.session), None, Some(&me.agent)).is_empty() {
+                    break;
+                }
+                release(&got);
+                got.clear();
             }
             w.get_or_insert_with(|| waiter(name, me));
             if !hs.is_empty() && now() - last > 120.0 {

@@ -1,7 +1,7 @@
 # Copy to the path `dibs doctor` prints as "config" (or set DIBS_HOME). Every key is optional.
 
 [machine]
-cpu_max = 90              # the hook holds commands back above this total CPU %
+cpu_max = 90              # sustained pressure delays new heavy launches
 ram_floor_gb = 8          # ...or below this much free RAM
 commit_max = 95           # ...or above this memory commit % (Windows)
 quiet_cpu_max = 25        # --measure waits until total CPU is under this
@@ -9,18 +9,21 @@ disk = { floor_gb = 15 }  # `dibs disk claim` always leaves this much free
 
 [hook]
 enabled = true            # false keeps the CLI and turns the Claude Code guard off
-pressure = true           # false: only resources hold commands back, never CPU or RAM
+pressure = true           # false disables CPU/RAM admission checks
+pressure_grace_s = 15     # observed overload must persist this long
 
 # One model on the GPU at a time. The pattern catches commands that forget to ask.
 [resource.gpu]
 match = '\b(?:ollama|llama-server|llama-cli|vllm)\b'
 
-# Two big transfers at a time, and none while the link is already busy.
+# Transfers share bandwidth. The probe protects measurements and reports activity.
+# To limit transfers to two slots instead, use shared = false and capacity = 2.
 [resource.network]
-capacity = 2
+shared = true
 match = '\b(?:hf download|huggingface-cli download|docker pull|aws s3 cp|wget)\b'
 probe = { kind = "net-counters", busy_mbps = 400 }
 
-# Builds that use every core take turns.
+# Builds share capacity; sustained CPU/RAM pressure controls new heavy launches.
 [resource.build]
+shared = true
 match = '\b(?:cargo build|cmake --build|ninja|msbuild|docker build)\b'

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Normal CPU, build and network reservations now track concurrent activity rather than granting exclusive slots. `resource.<name>.shared` makes the policy explicit; GPU/NPU, ports and databases keep capacity enforcement by default.
+- Measurements acquire the machine gate, drain declared work, wait for quiet and retain final noise checks. Ordinary reservations no longer stall unrelated throughput.
+- Measured holds discover active resource names and release those reservations when the series ends.
+- Hooks return immediately with explicit blocking reasons. Sustained pressure delays recognized new heavy launches after a configurable 15-second grace; lightweight work stays available.
+- Fixed Unix process-table parsing for padded PID columns, restoring process ancestry and nested-run detection.
+
+**Upgrade:** Existing `capacity` settings on CPU, build and network resources are ignored unless `shared = false` is set. `hook.wait_inline_s` is now ignored. Use `--measure` only for performance timing or throughput; keep setup, downloads, builds, training, correctness checks and analysis outside the measured reservation. See the [upgrade guide](https://github.com/Cyronius/dibs#upgrading-to-05).
+
 ## 0.4.0
 
 - `dibs hold --pid <n>`: the hold lasts while process `n` runs, past the ETA, and frees when it exits. Without it, an overrunning benchmark lost its hold at ETA + grace and a second job could start on top of it.
